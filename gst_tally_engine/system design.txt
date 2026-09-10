@@ -1,0 +1,21 @@
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                                    EVALUATION SUITE                                     │
+│                     (evals/evaluator.py - Assertion Matrix)                             │
+└────────────────────────────────────────────┬────────────────────────────────────────────┘
+                                             │ Validates Engine Output
+                                             ▼
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                                    AGENT LOOP ENGINE                                    │
+│             (loops/agent_loop.py - Sequential Graph, Checkpointing, Fallbacks)          │
+└──────────────┬─────────────────────────────┬─────────────────────────────┬──────────────┘
+               │                             │                             │
+               ▼                             ▼                             ▼
+┌─────────────────────────────┐ ┌─────────────────────────────┐ ┌─────────────────────────────┐
+│          CONTEXTS           │ │          HARNESSES          │ │         CORE ENGINE         │
+│     (context/state.py)      │ │     (harness/wrappers.py)   │ │      (agent_engine.py)      │
+├─────────────────────────────┤ ├─────────────────────────────┤ ├─────────────────────────────┤
+│ • SQLite Mapping Memory     │ │ • Validation Harness        │ │ • GSTDataExtractor          │
+│ • Execution State Tracking  │ │   (FY & 10k Batch Cap)      │ │   (B2B, CDNR, B2BA, CDNRA)  │
+│ • State Code Dictionary     │ │ • Tally HTTP POST Harness   │ │ • TallyXMLEngine            │
+│ • Ledger Naming Rules       │ │ • Audit & Anomaly Harness   │ │   (Masters & Entries XML)   │
+└─────────────────────────────┘ └─────────────────────────────┘ └─────────────────────────────┘
