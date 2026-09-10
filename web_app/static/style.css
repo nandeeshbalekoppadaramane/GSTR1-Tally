@@ -1,19 +1,58 @@
-/* Modern Clean Accounting Theme */
+/* ==========================================================================
+   TaxFlow Pro — Design tokens
+   A ledger-inspired system: ink navy for structure, a single stamp-teal
+   accent for interaction/trust, and color used only where it carries real
+   financial meaning (revenue vs. tax obligation) rather than decoratively.
+   ========================================================================== */
 :root {
-  --primary-navy: #0f172a;
-  --secondary-navy: #1e293b;
-  --teal: #0ea5e9;
-  --teal-dark: #0369a1;
-  --teal-light: #e0f2fe;
-  --teal-subtle: #f0f9ff;
-  --bg-page: #f8fafc;
-  --card-border: #e2e8f0;
+  /* Ink (text & structure) */
+  --ink-900: #0b1220;
+  --ink-700: #33415a;
+  --ink-500: #64748b;
+  --ink-300: #94a3b8;
+
+  /* Brand / interaction — deep "stamp" teal, evokes an official verified seal
+     rather than a generic SaaS sky-blue */
+  --primary-navy: #0b1220;
+  --secondary-navy: #16223c;
+  --teal: #0f8a7a;
+  --teal-dark: #0b6a5d;
+  --teal-light: #e3f5f2;
+  --teal-subtle: #f2fbfa;
+
+  /* Meaning colors — used only for financial semantics, not per-card decoration */
+  --revenue: #0f8a7a;
+  --revenue-subtle: #e3f5f2;
+  --tax: #b3690a;
+  --tax-subtle: #fbeed9;
+  --debit: #b3261e;
+  --debit-subtle: #fbe8e7;
+
+  --bg-page: #f6f7f9;
+  --card-border: #e4e7ec;
+
+  --font-display: "Manrope", -apple-system, "Segoe UI", sans-serif;
+  --font-body: "Inter", -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 body {
   background-color: var(--bg-page);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  color: #1e293b;
+  font-family: var(--font-body);
+  color: var(--ink-900);
+}
+
+h1, h2, h3, h4, h5, h6,
+.navbar-brand, .nav-link, .btn, .metric-val,
+.client-card h5, .card-header, .modal-title {
+  font-family: var(--font-display);
+}
+
+/* Financial figures, GSTINs, and invoice/document numbers get the mono
+   treatment throughout — tabular precision is the actual subject matter. */
+.font-mono, .metric-val, code {
+  font-family: var(--font-mono) !important;
+  font-variant-numeric: tabular-nums;
 }
 
 .bg-dark-navy {
@@ -38,7 +77,7 @@ body {
 }
 
 .border-teal-light {
-  border-color: #bae6fd !important;
+  border-color: #bfe6e0 !important;
 }
 
 .btn-teal {
@@ -55,8 +94,8 @@ body {
 .brand-icon {
   width: 34px;
   height: 34px;
-  background: rgba(14, 165, 233, 0.2);
-  color: var(--teal);
+  background: rgba(15, 138, 122, 0.22);
+  color: #4fd9c4;
   border-radius: 8px;
   display: flex;
   align-items: center;
@@ -64,11 +103,24 @@ body {
   font-size: 1.1rem;
 }
 
+.navbar-brand .fw-bold {
+  font-family: var(--font-display);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+/* Ledger rule — a thin double line under the top bar, a quiet nod to a
+   ruled ledger page's top margin. This is the app's one signature detail. */
+.navbar.bg-dark-navy {
+  border-bottom: 1px solid rgba(79, 217, 196, 0.35);
+  box-shadow: 0 2px 0 0 rgba(11, 18, 32, 0.06);
+}
+
 .version-badge {
   font-size: 0.68rem;
   font-weight: 500;
   padding: 3px 8px;
-  background-color: #334155 !important;
+  background-color: var(--secondary-navy) !important;
 }
 
 /* Status Pill */
@@ -95,62 +147,131 @@ body {
   display: inline-block;
 }
 .status-online .status-dot {
-  background-color: #10b981;
-  box-shadow: 0 0 8px #10b981;
+  background-color: #1a9c6f;
+  box-shadow: 0 0 8px #1a9c6f;
 }
 .status-offline .status-dot {
-  background-color: #f59e0b;
+  background-color: var(--tax);
 }
 .status-checking .status-dot {
-  background-color: #94a3b8;
+  background-color: var(--ink-300);
 }
 
-/* KPI Metric Cards */
+/* ==========================================================================
+   KPI Metric Cards
+   Color carries meaning, not decoration: neutral ink for counts, teal for
+   revenue-side figures, amber for tax obligation. One unified icon
+   treatment instead of five different pastel chips.
+   ========================================================================== */
 .metric-card {
-  border-radius: 12px;
+  border-radius: 10px;
+  border-left: 3px solid var(--card-border) !important;
   transition: transform 0.15s ease, box-shadow 0.15s ease;
   background: #ffffff;
-  border: 1px solid var(--card-border) !important;
+  border: 1px solid var(--card-border);
 }
 .metric-card:hover {
   transform: translateY(-2px);
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.04) !important;
+  box-shadow: 0 8px 16px rgba(11, 18, 32, 0.05) !important;
+}
+.metric-card--neutral { border-left-color: var(--ink-700) !important; }
+.metric-card--revenue { border-left-color: var(--revenue) !important; }
+.metric-card--tax { border-left-color: var(--tax) !important; }
+
+.metric-card--neutral .metric-icon-box { background: #eef1f5; color: var(--ink-700); }
+.metric-card--revenue .metric-icon-box { background: var(--revenue-subtle); color: var(--revenue); }
+.metric-card--tax .metric-icon-box { background: var(--tax-subtle); color: var(--tax); }
+
+/* The label+value block must be allowed to shrink and wrap - without this,
+   flexbox treats an unbreakable string like "₹6,83,07,158.00" as having
+   no wrap point and lets it overflow straight past the card into the icon. */
+.metric-card .card-body > .d-flex {
+  align-items: flex-start;
+}
+.metric-card .card-body > .d-flex > div:first-child {
+  min-width: 0;
+  flex: 1 1 auto;
+  padding-right: 10px;
 }
 .metric-label {
-  font-size: 0.75rem;
+  font-size: 0.72rem;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
-  font-weight: 600;
-  color: #64748b;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+  color: var(--ink-500);
   margin-bottom: 2px;
 }
 .metric-val {
-  font-size: 1.35rem;
-  font-weight: 700;
-  letter-spacing: -0.5px;
-  line-height: 1.2;
+  font-size: clamp(1rem, 1.5vw, 1.3rem);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+  color: var(--ink-900);
+  overflow-wrap: anywhere;
 }
 .metric-sub {
   font-size: 0.72rem;
-  color: #94a3b8;
+  color: var(--ink-300);
   margin-top: 3px;
   font-weight: 500;
 }
 .metric-icon-box {
-  width: 44px;
-  height: 44px;
-  border-radius: 10px;
+  width: 42px;
+  height: 42px;
+  border-radius: 9px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 1.25rem;
+  font-size: 1.15rem;
+  flex-shrink: 0;
 }
-.text-purple { color: #8b5cf6 !important; }
-.bg-purple-subtle { background-color: #ede9fe !important; }
+
+/* Compact ticker mode — collapses the KPI strip to a single slim row so
+   switching to Counterparties / Transactions / Tally Export doesn't force
+   a scroll past a full bank of cards just to reach the tab's content. */
+#kpiMetricsStrip.kpi-compact {
+  display: flex;
+  flex-wrap: wrap;
+  row-gap: 4px;
+  align-items: stretch;
+  background: #fff;
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  padding: 2px 4px;
+}
+#kpiMetricsStrip.kpi-compact > [class*="col-"] {
+  flex: 0 0 auto;
+  width: auto;
+  max-width: none;
+  padding: 0;
+  border-right: 1px solid var(--card-border);
+}
+#kpiMetricsStrip.kpi-compact > [class*="col-"]:last-child {
+  border-right: none;
+}
+#kpiMetricsStrip.kpi-compact .card {
+  border: none !important;
+  box-shadow: none !important;
+  border-radius: 0;
+  background: transparent;
+}
+#kpiMetricsStrip.kpi-compact .card:hover { transform: none; }
+#kpiMetricsStrip.kpi-compact .card-body { padding: 0.55rem 1rem !important; }
+#kpiMetricsStrip.kpi-compact .metric-icon-box,
+#kpiMetricsStrip.kpi-compact .metric-sub {
+  display: none;
+}
+#kpiMetricsStrip.kpi-compact .metric-label {
+  font-size: 0.62rem;
+  margin-bottom: 1px;
+}
+#kpiMetricsStrip.kpi-compact .metric-val {
+  font-size: 0.95rem;
+}
 
 /* Custom Tabs */
 .custom-tabs .nav-link {
-  color: #64748b;
+  color: var(--ink-500);
   font-weight: 600;
   font-size: 0.9rem;
   border: none;
@@ -171,17 +292,24 @@ body {
 
 /* Financial Tables */
 .monthly-table th {
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   text-transform: uppercase;
-  letter-spacing: 0.3px;
-  color: #475569;
+  letter-spacing: 0.04em;
+  color: var(--ink-700);
+  font-family: var(--font-display);
+  font-weight: 700;
+  white-space: nowrap;
 }
 .monthly-table td, .monthly-table th {
   padding: 10px 14px;
 }
-.font-mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+.monthly-table td.font-mono {
+  white-space: nowrap;
 }
+.table-responsive {
+  overflow-x: auto;
+}
+
 /* Active Client Hero Banner */
 .client-hero-icon {
   width: 52px;
@@ -203,11 +331,11 @@ body {
 }
 .client-card:hover {
   transform: translateY(-3px);
-  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.05);
+  box-shadow: 0 10px 20px rgba(11, 18, 32, 0.06);
 }
 .client-card.is-active-client {
   border: 2px solid var(--teal) !important;
-  box-shadow: 0 0 16px rgba(14, 165, 233, 0.15);
+  box-shadow: 0 0 16px rgba(15, 138, 122, 0.15);
 }
 .client-card.is-active-client::before {
   content: "";
@@ -216,7 +344,7 @@ body {
   left: 0;
   right: 0;
   height: 4px;
-  background: linear-gradient(90deg, #0ea5e9, #38bdf8);
+  background: linear-gradient(90deg, var(--teal), #4fd9c4);
 }
 
 .copy-gstin-btn {
@@ -235,4 +363,18 @@ body {
 .btn-outline-teal:hover {
   background: var(--teal);
   color: #fff;
+}
+
+/* Verified-state "seal" badge — a small nod to an official stamp for GSTIN
+   portal-verified parties, rather than a plain colored pill. */
+.badge.seal-verified {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1.5px solid var(--revenue);
+  color: var(--revenue);
+  background: var(--revenue-subtle);
+  border-radius: 20px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }

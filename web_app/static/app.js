@@ -27,10 +27,21 @@ document.addEventListener("DOMContentLoaded", () => {
   initApp();
 });
 
+// KPI strip shows full cards on these tabs; everywhere else it collapses to
+// a slim ticker so the tab's own content is visible without scrolling past it.
+const KPI_FULL_CARD_TABS = ["clients-tab"];
+
+function updateKpiStripDensity(activeTabId) {
+  const strip = document.getElementById("kpiMetricsStrip");
+  if (!strip) return;
+  strip.classList.toggle("kpi-compact", !KPI_FULL_CARD_TABS.includes(activeTabId));
+}
+
 function setupTabListeners() {
   document.querySelectorAll('button[data-bs-toggle="tab"]').forEach(tabBtn => {
     tabBtn.addEventListener('shown.bs.tab', (event) => {
       localStorage.setItem(STORAGE_TAB_KEY, event.target.id);
+      updateKpiStripDensity(event.target.id);
     });
   });
 }
@@ -46,7 +57,9 @@ function switchToTab(tabId) {
 async function initApp() {
   setupTabListeners();
   await fetchClients();
-  await checkTallyStatus();
+  // Fire-and-forget: Tally may be offline, and pinging it shouldn't block
+  // every page load. checkTallyStatus() updates its own pill UI independently.
+  checkTallyStatus();
 
   const savedClientId = localStorage.getItem(STORAGE_CLIENT_KEY);
   const savedTabId = localStorage.getItem(STORAGE_TAB_KEY);
@@ -788,7 +801,7 @@ async function checkTallyStatus() {
   const pill = document.getElementById("tallyStatusPill");
   const text = document.getElementById("tallyStatusText");
   const liveBadge = document.getElementById("tallyLiveBadge");
-  const endpoint = document.getElementById("tallyEndpointInput") ? document.getElementById("tallyEndpointInput").value : "http://localhost:9000";
+  const endpoint = document.getElementById("tallyEndpointInput") ? document.getElementById("tallyEndpointInput").value : "http://127.0.0.1:9000";
 
   pill.className = "status-pill status-checking";
   text.textContent = "Connecting to Tally...";
@@ -1382,13 +1395,6 @@ async function uploadGstrFiles() {
 // ---------------------------------------------------------------------------
 // Helpers: Tab Switcher & Toast
 // ---------------------------------------------------------------------------
-function switchToTab(tabId) {
-  const trigger = document.getElementById(tabId);
-  if (trigger) {
-    bootstrap.Tab.getOrCreateInstance(trigger).show();
-  }
-}
-
 function showToast(msg) {
   const toastEl = document.getElementById("appToast");
   const msgEl = document.getElementById("toastMessage");

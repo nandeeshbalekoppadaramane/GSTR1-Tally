@@ -16,6 +16,7 @@ party_mappings_backup.csv
 # --- Generated output (fully regenerable from input_json/ via the app) ---
 output_xml/
 eval_output/
+captcha_poc_output/
 
 # --- TallyPrime live company data folder (binary Tally database, not project code) ---
 100000/

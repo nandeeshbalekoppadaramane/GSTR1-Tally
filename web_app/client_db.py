@@ -9,6 +9,7 @@ import sqlite3
 import re
 import csv
 import json
+from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 
@@ -30,10 +31,23 @@ STATE_CODES = {
 
 _ACTIVE_CLIENT_ID = 1
 
+@contextmanager
 def get_connection():
+    """Every call site uses `with get_connection() as conn:`. sqlite3.Connection's own
+    context-manager protocol only commits/rolls back on exit - it never closes the
+    connection, so that pattern was leaking one open connection per call. Wrapping it
+    here fixes every call site at once: still commits (or rolls back on error) exactly
+    as before, and now actually closes the connection too."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 def init_client_db():
     """Initializes tables and seeds the primary client if none exists."""
@@ -676,6 +690,20 @@ def get_party_mapping(gstin: str) -> Optional[Dict[str, Any]]:
         c.execute("SELECT * FROM party_mappings WHERE gstin = ?", (clean,))
         row = c.fetchone()
         return dict(row) if row else None
+
+def get_party_mappings_bulk(gstins: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Fetches multiple party mappings in one query, keyed by GSTIN. Use this instead
+    of calling get_party_mapping() in a loop - each call opens its own DB connection,
+    so looping it is an N+1 query pattern that gets slower the more parties there are."""
+    init_client_db()
+    clean = list({g.strip().upper() for g in gstins if g})
+    if not clean:
+        return {}
+    with get_connection() as conn:
+        c = conn.cursor()
+        placeholders = ",".join("?" * len(clean))
+        c.execute(f"SELECT * FROM party_mappings WHERE gstin IN ({placeholders})", clean)
+        return {row["gstin"]: dict(row) for row in c.fetchall()}
 
 def list_party_mappings() -> List[Dict[str, Any]]:
     init_client_db()

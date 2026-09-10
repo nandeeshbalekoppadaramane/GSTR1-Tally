@@ -301,7 +301,7 @@ def reload_dataset(client_id: Optional[int] = None) -> Dict[str, Any]:
 
     return store.financial_totals
 
-def query_tally_company(endpoint: str = "http://localhost:9000") -> dict:
+def query_tally_company(endpoint: str = "http://127.0.0.1:9000") -> dict:
     """Checks TallyPrime connection and active company name."""
     xml_req = """<ENVELOPE>
   <HEADER>
@@ -319,7 +319,7 @@ def query_tally_company(endpoint: str = "http://localhost:9000") -> dict:
   </BODY>
 </ENVELOPE>"""
     try:
-        resp = requests.post(endpoint, data=xml_req.encode("utf-8"), headers={"Content-Type": "text/xml"}, timeout=3)
+        resp = requests.post(endpoint, data=xml_req.encode("utf-8"), headers={"Content-Type": "text/xml"}, timeout=1.5)
         if resp.status_code == 200 and "<COMPANY" in resp.text:
             m = re.search(r'<COMPANY\s+NAME="([^"]+)"', resp.text)
             comp_name = m.group(1) if m else "Open Company"
@@ -543,7 +543,7 @@ def clear_all_db_records():
 # General GSTR-1 & Tally API Routes
 # ---------------------------------------------------------------------------
 @app.get("/api/status")
-def get_status(endpoint: str = "http://localhost:9000"):
+def get_status(endpoint: str = "http://127.0.0.1:9000"):
     """Returns Tally connection status, active client, and dataset status."""
     tally_info = query_tally_company(endpoint)
     active_id = client_db.get_active_client_id()
@@ -604,11 +604,14 @@ def get_parties(search: Optional[str] = None):
         if d.party_gstin:
             party_docs.setdefault(d.party_gstin, []).append(d)
 
+    # One bulk query for every party's mapping instead of one query per party (N+1).
+    all_mappings = client_db.get_party_mappings_bulk(list(party_docs.keys()))
+
     parties_list = []
     pref = store.name_preference
     for idx, (gstin, docs) in enumerate(sorted(party_docs.items())):
         sample_doc = docs[0]
-        db_map = client_db.get_party_mapping(gstin)
+        db_map = all_mappings.get(gstin)
         if db_map:
             trade_name = db_map.get("trade_name") or "NA"
             legal_name = db_map.get("legal_name") or trade_name
@@ -965,7 +968,7 @@ def generate_xml(preference: Optional[str] = None):
 
 class ImportRequest(BaseModel):
     target: str = "both"  # "both", "masters", "vouchers"
-    endpoint: str = "http://localhost:9000"
+    endpoint: str = "http://127.0.0.1:9000"
 
 @app.post("/api/import-tally")
 def import_to_tally(req: ImportRequest):
