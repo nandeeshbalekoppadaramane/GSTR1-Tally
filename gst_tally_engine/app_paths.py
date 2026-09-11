@@ -15,3 +15,12 @@ def get_data_root() -> Path:
     if is_frozen():
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent.parent
+
+
+def get_bundle_dir() -> Path:
+    """Directory holding read-only bundled resources (e.g. static/). PyInstaller
+    extracts these under sys._MEIPASS at runtime (a temp dir for --onefile, or the
+    app folder itself for --onedir); running from source this is just the repo root."""
+    if is_frozen():
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+    return Path(__file__).resolve().parent.parent

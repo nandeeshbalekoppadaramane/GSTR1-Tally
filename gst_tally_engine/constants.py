@@ -21,7 +21,10 @@ def get_state_name(gstin: str) -> str:
 import os
 import csv
 
-PARTY_MAPPINGS_FILE = os.path.join(os.path.dirname(__file__), "..", "party_mappings.csv")
+from app_paths import get_data_root
+
+_DATA_ROOT = str(get_data_root())
+PARTY_MAPPINGS_FILE = os.path.join(_DATA_ROOT, "party_mappings.csv")
 _PARTY_MAP = {}
 _PARTY_LEGAL_MAP = {}
 _NAME_PREFERENCE = "TRADE"
@@ -49,7 +52,7 @@ def reload_party_mappings():
             pass
 
     # Also load from SQLite client_memory.db for permanent persistence
-    db_path = os.path.join(os.path.dirname(__file__), "..", "client_memory.db")
+    db_path = os.path.join(_DATA_ROOT, "client_memory.db")
     if os.path.exists(db_path):
         try:
             import sqlite3

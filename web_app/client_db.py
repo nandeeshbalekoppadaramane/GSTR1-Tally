@@ -13,8 +13,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 
-ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = ROOT / "client_memory.db"
+from app_paths import get_data_root
+
+DB_PATH = get_data_root() / "client_memory.db"
 
 STATE_CODES = {
     "01": "Jammu & Kashmir", "02": "Himachal Pradesh", "03": "Punjab", "04": "Chandigarh",

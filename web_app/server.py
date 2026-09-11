@@ -44,7 +44,7 @@ from constants import (
     get_state_name,
     format_party_ledger
 )
-from app_paths import get_data_root
+from app_paths import get_data_root, get_bundle_dir
 
 # Writable data lives next to the .exe in a frozen build, so it survives restarts
 # instead of being written into PyInstaller's temp extraction folder.
@@ -1060,11 +1060,23 @@ class ImportRequest(BaseModel):
 @app.post("/api/import-tally")
 def import_to_tally(req: ImportRequest):
     """Posts Consolidated XML directly to TallyPrime via HTTP."""
+    active_id = client_db.get_active_client_id()
+    if not active_id:
+        raise HTTPException(status_code=400, detail="No active client selected. Please select a client first.")
+
+    # Always reload and regenerate XML before importing so that:
+    # 1. Any deleted months/periods are immediately removed.
+    # 2. Freshly uploaded returns and decimal values are used.
+    # 3. No stale file on disk is ever posted to Tally.
+    reload_dataset(active_id)
+
+    if not store.documents:
+        raise HTTPException(status_code=400, detail="No documents found for this client to export/import.")
+
+    generate_xml(store.name_preference)
+
     masters_file = OUTPUT_DIR / "Consolidated_Masters.xml"
     entries_file = OUTPUT_DIR / "Consolidated_Entries.xml"
-
-    if not masters_file.exists() or not entries_file.exists():
-        generate_xml(store.name_preference)
 
     def post_file(fpath: Path):
         with open(fpath, "r", encoding="utf-8") as f:
@@ -1286,6 +1298,11 @@ def delete_client_return_period(client_id: int, period_label: str):
     if deleted:
         store.is_loaded = False
         reload_dataset(client_id)
+        if store.documents:
+            generate_xml(store.name_preference)
+        else:
+            (OUTPUT_DIR / "Consolidated_Masters.xml").unlink(missing_ok=True)
+            (OUTPUT_DIR / "Consolidated_Entries.xml").unlink(missing_ok=True)
         return {"status": "success", "message": f"Period '{period_label}' deleted successfully."}
     raise HTTPException(status_code=404, detail=f"Period '{period_label}' not found.")
 
@@ -1307,10 +1324,12 @@ def clear_client_returns(client_id: int):
 
     store.is_loaded = False
     reload_dataset(client_id)
+    (OUTPUT_DIR / "Consolidated_Masters.xml").unlink(missing_ok=True)
+    (OUTPUT_DIR / "Consolidated_Entries.xml").unlink(missing_ok=True)
     return {"status": "success", "message": "All return data cleared for client."}
 
 # Mount static frontend
-STATIC_DIR = Path(__file__).resolve().parent / "static"
+STATIC_DIR = get_bundle_dir() / "static" if getattr(sys, "frozen", False) else get_bundle_dir() / "web_app" / "static"
 if STATIC_DIR.exists():
     app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 
