@@ -21,6 +21,10 @@ captcha_poc_output/
 # --- TallyPrime live company data folder (binary Tally database, not project code) ---
 100000/
 
+# --- PyInstaller build output (regenerated from TaxFlowPro.spec, not source) ---
+build/
+dist/
+
 # --- Editors / OS ---
 .vscode/
 .idea/
