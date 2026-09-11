@@ -24,6 +24,15 @@ const STORAGE_CLIENT_KEY = "agy_active_client_id";
 const STORAGE_TAB_KEY = "agy_active_tab_id";
 const STORAGE_INVOICES_PAGE = "agy_invoices_page";
 
+async function safeJson(res) {
+  try {
+    const text = await res.text();
+    return JSON.parse(text);
+  } catch (err) {
+    return { detail: `Server response (${res.status}): unexpected format` };
+  }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   initApp();
 });
@@ -697,7 +706,7 @@ async function handleClientSubmit(e) {
       body: JSON.stringify(payload)
     });
 
-    const data = await res.json();
+    const data = await safeJson(res);
     if (!res.ok) {
       alertBox.textContent = data.detail || "Failed to save client.";
       alertBox.classList.remove("d-none");
@@ -738,9 +747,6 @@ function deleteClientPrompt(clientId) {
     }
   }
 
-  const filesCheckbox = document.getElementById("delClientFilesCheckbox");
-  if (filesCheckbox) filesCheckbox.checked = true;
-
   const modal = new bootstrap.Modal(document.getElementById("deleteClientModal"));
   modal.show();
 }
@@ -751,10 +757,8 @@ async function executeClientDelete() {
   btn.disabled = true;
   btn.innerHTML = `<div class="spinner-border spinner-border-sm me-1" role="status"></div> Deleting...`;
 
-  const deleteFiles = document.getElementById("delClientFilesCheckbox") ? document.getElementById("delClientFilesCheckbox").checked : true;
-
   try {
-    const res = await fetch(`/api/clients/${pendingDeleteClientId}?delete_files=${deleteFiles}`, { method: "DELETE" });
+    const res = await fetch(`/api/clients/${pendingDeleteClientId}`, { method: "DELETE" });
     const data = await res.json();
     if (!res.ok) {
       alert(data.detail || "Delete failed.");
@@ -931,7 +935,7 @@ async function deleteReturnPeriod(label) {
   if (!confirm(`Are you sure you want to delete return data for period '${label}'?`)) return;
   try {
     const res = await fetch(`/api/clients/${activeClient.id}/periods/${encodeURIComponent(label)}`, { method: "DELETE" });
-    const data = await res.json();
+    const data = await safeJson(res);
     if (res.ok) {
       showToast(data.message || `Period ${label} deleted.`);
       await fetchOverviewData();
@@ -950,7 +954,7 @@ async function clearClientReturnsPrompt() {
   if (!confirm(`Are you sure you want to clear ALL uploaded return files for client '${activeClient.name}'? This cannot be undone.`)) return;
   try {
     const res = await fetch(`/api/clients/${activeClient.id}/clear-returns`, { method: "DELETE" });
-    const data = await res.json();
+    const data = await safeJson(res);
     if (res.ok) {
       showToast(data.message || "All return files cleared.");
       await fetchOverviewData();
@@ -1353,7 +1357,7 @@ async function importToTally(target) {
       body: JSON.stringify({ target: target, endpoint: endpoint })
     });
 
-    const data = await res.json();
+    const data = await safeJson(res);
     if (!res.ok) {
       badge.className = "badge bg-danger";
       badge.textContent = "Failed";
@@ -1743,7 +1747,7 @@ async function startPortalVerification() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
-    const data = await res.json();
+    const data = await safeJson(res);
     if (!res.ok) {
       alert(data.detail || "Error starting verification");
       startBtn.disabled = false;
@@ -1983,7 +1987,7 @@ async function executePartyMappingDelete() {
 
   try {
     const res = await fetch(`/api/parties/${pendingDelPartyGstin}`, { method: "DELETE" });
-    const data = await res.json();
+    const data = await safeJson(res);
     if (res.ok) {
       showToast(`Mapping for ${pendingDelPartyGstin} deleted permanently.`);
       const modal = bootstrap.Modal.getInstance(document.getElementById("deletePartyModal"));
@@ -2014,7 +2018,7 @@ async function executeClearAllPartyMappings() {
 
   try {
     const res = await fetch("/api/parties/clear-all", { method: "POST" });
-    const data = await res.json();
+    const data = await safeJson(res);
     if (res.ok) {
       showToast("All saved GSTIN party mappings deleted! Counterparties reset to Unverified.");
       const modal = bootstrap.Modal.getInstance(document.getElementById("clearAllPartiesModal"));

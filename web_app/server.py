@@ -11,7 +11,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
-from fastapi import FastAPI, UploadFile, File, Form, Query, HTTPException
+from fastapi import FastAPI, Request, UploadFile, File, Form, Query, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -49,11 +49,9 @@ from app_paths import get_data_root, get_bundle_dir
 # Writable data lives next to the .exe in a frozen build, so it survives restarts
 # instead of being written into PyInstaller's temp extraction folder.
 DATA_ROOT = get_data_root()
-INPUT_DIR = DATA_ROOT / "input_json"
 OUTPUT_DIR = DATA_ROOT / "output_xml"
 CSV_PATH = DATA_ROOT / "party_mappings.csv"
 
-INPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 client_db.init_client_db()
@@ -72,6 +70,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    import traceback
+    traceback.print_exc()
+    return JSONResponse(
+        status_code=500,
+        content={"status": "error", "detail": f"Internal Server Error: {str(exc)}"}
+    )
+
 MONTH_ORDER = {
     "APRIL": 1, "MAY": 2, "JUNE": 3, "JULY": 4,
     "AUGUST": 5, "SEPTEMBER": 6, "OCTOBER": 7, "NOVEMBER": 8,
@@ -84,29 +91,6 @@ def get_month_sort_key(name: str) -> int:
         if month in upper:
             return idx
     return 99
-
-def get_client_input_dir(client_id: Optional[int] = None) -> Optional[Path]:
-    if client_id is None:
-        client_id = client_db.get_active_client_id()
-    if client_id is None:
-        return None
-    cl = client_db.get_client(client_id)
-    if not cl:
-        return None
-    
-    gstin = cl.get("gstin", "").strip().upper()
-    code = cl.get("client_code", "").strip()
-
-    # Look for matching directory by GSTIN or code
-    if gstin and (INPUT_DIR / gstin).exists():
-        return INPUT_DIR / gstin
-    if code and (INPUT_DIR / code).exists():
-        return INPUT_DIR / code
-
-    # Fallback to creating GSTIN folder
-    target = INPUT_DIR / (gstin or code or f"CL-{client_id:03d}")
-    target.mkdir(parents=True, exist_ok=True)
-    return target
 
 # Global in-memory cache
 class DataStore:
@@ -189,60 +173,10 @@ def _empty_totals() -> Dict[str, Any]:
         "gross_invoiced_value": 0.0, "months_count": 0
     }
 
-def _migrate_legacy_input_folder(client_id: int, client_dir: Path, client_gstin: str):
-    """One-time fallback for clients uploaded before raw JSON stopped being persisted to disk:
-    parses whatever is still sitting in input_json/<client>/ and writes it into the DB so this
-    client never needs its on-disk files read again after this call."""
-    seen_labels = set()
-    tasks = []  # List of (json_path, label)
-
-    for d in sorted(list(client_dir.iterdir()), key=lambda p: get_month_sort_key(p.name)):
-        if d.is_dir():
-            jsons = list(d.glob("*.json"))
-            if jsons:
-                tasks.append((jsons[0], d.name))
-                seen_labels.add(d.name)
-
-    for zf in sorted(list(client_dir.glob("*.zip")), key=lambda p: get_month_sort_key(p.stem)):
-        if zf.stem not in seen_labels:
-            extract_dir = client_dir / zf.stem
-            extract_dir.mkdir(parents=True, exist_ok=True)
-            try:
-                with zipfile.ZipFile(zf, 'r') as zip_ref:
-                    zip_ref.extractall(extract_dir)
-                jsons = list(extract_dir.glob("*.json"))
-                if jsons:
-                    tasks.append((jsons[0], zf.stem))
-                    seen_labels.add(zf.stem)
-            except Exception as ze:
-                print(f"[WARN] Error extracting legacy zip {zf}: {ze}")
-
-    for jf in client_dir.glob("*.json"):
-        if jf.stem not in seen_labels:
-            tasks.append((jf, jf.stem))
-            seen_labels.add(jf.stem)
-
-    for fpath, label in tasks:
-        try:
-            with open(fpath, "r", encoding="utf-8") as f:
-                payload = json.load(f)
-        except Exception:
-            continue
-
-        root_payload = domain.unwrap_gst_payload(payload)
-        file_gstin = (root_payload.get("gstin") or payload.get("gstin") or "").strip().upper()
-        if file_gstin and file_gstin != client_gstin:
-            continue
-
-        docs = GSTDataExtractor.extract_documents(payload, "GSTR1")
-        if docs:
-            client_db.save_invoice_documents(client_id, label, [_doc_to_row(d) for d in docs])
-
 def reload_dataset(client_id: Optional[int] = None) -> Dict[str, Any]:
     """Rebuilds the in-memory store for the active client strictly from persisted DB records.
-    Raw uploaded JSON is never read from disk here - it was parsed once at upload time and the
-    extracted documents are what's stored. The only exception is a one-time migration for
-    clients that still have pre-existing files under input_json/ from before this behavior."""
+    Raw uploaded JSON is never read from or written to disk - it's parsed once at upload
+    time and only the extracted documents are stored."""
     if client_id is None:
         client_id = client_db.get_active_client_id()
 
@@ -254,16 +188,9 @@ def reload_dataset(client_id: Optional[int] = None) -> Dict[str, Any]:
         store.is_loaded = True
         return store.financial_totals
 
-    client_gstin = cl["gstin"].strip().upper()
     reload_party_mappings()
 
     stored_rows = client_db.get_invoice_documents(client_id)
-
-    if not stored_rows:
-        client_dir = get_client_input_dir(client_id)
-        if client_dir and client_dir.exists() and any(client_dir.iterdir()):
-            _migrate_legacy_input_folder(client_id, client_dir, client_gstin)
-            stored_rows = client_db.get_invoice_documents(client_id)
 
     by_period: Dict[str, List[Dict[str, Any]]] = {}
     for row in stored_rows:
@@ -423,36 +350,21 @@ def update_client_detail(client_id: int, req: ClientUpdateRequest):
 
 @app.delete("/api/clients/{client_id}")
 @app.post("/api/clients/{client_id}/delete")
-def delete_client_record(client_id: int, delete_files: bool = True):
-    """Deletes a client profile, return period records, and optionally uploaded return files."""
+def delete_client_record(client_id: int):
+    """Deletes a client profile and its return period records."""
     cl = client_db.get_client(client_id)
     if not cl:
         raise HTTPException(status_code=404, detail="Client not found.")
 
     was_active = (client_id == client_db.get_active_client_id())
     gstin = cl.get("gstin", "").strip().upper()
-    code = cl.get("client_code", "").strip()
 
-    # 1. Optionally delete uploaded files for this client
-    if delete_files and gstin:
-        client_folders = []
-        if (INPUT_DIR / gstin).exists():
-            client_folders.append(INPUT_DIR / gstin)
-        if code and (INPUT_DIR / code).exists():
-            client_folders.append(INPUT_DIR / code)
-        
-        for folder in client_folders:
-            try:
-                shutil.rmtree(folder)
-            except Exception as e:
-                print(f"[WARN] Failed to delete client folder {folder}: {e}")
-
-    # 2. Delete from database (cascades return periods)
+    # Delete from database (cascades return periods)
     ok = client_db.delete_client(client_id)
     if not ok:
         raise HTTPException(status_code=500, detail="Failed to delete client from database.")
 
-    # 3. If active client was deleted, switch context or clear store
+    # If active client was deleted, switch context or clear store
     new_active_id = client_db.get_active_client_id()
     if was_active:
         if new_active_id:
@@ -475,7 +387,6 @@ def delete_client_record(client_id: int, delete_files: bool = True):
         "status": "success",
         "message": f"Client '{cl['name']}' ({gstin}) deleted successfully.",
         "deleted_client_id": client_id,
-        "files_removed": delete_files,
         "new_active_client": new_active_client
     }
 
@@ -1285,19 +1196,6 @@ def delete_client_return_period(client_id: int, period_label: str):
     clean_target = period_label.strip()
     deleted = client_db.delete_period_documents(client_id, clean_target)
 
-    # Best-effort cleanup of any leftover on-disk copy from before uploads stopped
-    # writing to input_json/ (legacy clients only; new uploads never create these).
-    client_dir = get_client_input_dir(client_id)
-    if client_dir and client_dir.exists():
-        for item in list(client_dir.iterdir()):
-            if item.name == clean_target or item.stem == clean_target or clean_target in item.name:
-                if item.is_dir():
-                    shutil.rmtree(item, ignore_errors=True)
-                    deleted = True
-                elif item.is_file():
-                    item.unlink(missing_ok=True)
-                    deleted = True
-
     if deleted:
         store.is_loaded = False
         reload_dataset(client_id)
@@ -1314,16 +1212,6 @@ def delete_client_return_period(client_id: int, period_label: str):
 def clear_client_returns(client_id: int):
     """Clears all stored return data for a client."""
     client_db.clear_client_documents(client_id)
-
-    # Best-effort cleanup of any leftover on-disk copy from before uploads stopped
-    # writing to input_json/ (legacy clients only; new uploads never create these).
-    client_dir = get_client_input_dir(client_id)
-    if client_dir and client_dir.exists():
-        for item in list(client_dir.iterdir()):
-            if item.is_dir():
-                shutil.rmtree(item, ignore_errors=True)
-            else:
-                item.unlink(missing_ok=True)
 
     store.is_loaded = False
     reload_dataset(client_id)
