@@ -17,19 +17,16 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# Add project roots to sys.path - only meaningful running from source; a PyInstaller
-# build already has every module analyzed and bundled, and there is no on-disk
-# gst_tally_engine/web_app tree next to the frozen exe to point at.
-SRC_ROOT = Path(__file__).resolve().parent.parent
+# Add this app's own folders to sys.path - only meaningful running from source; a
+# PyInstaller build already has every module analyzed and bundled, and there is no
+# on-disk TaxFlowPro/engine tree next to the frozen exe to point at.
+SRC_ROOT = Path(__file__).resolve().parent
 if not getattr(sys, "frozen", False):
     if str(SRC_ROOT) not in sys.path:
         sys.path.insert(0, str(SRC_ROOT))
-    GST_ENGINE = SRC_ROOT / "gst_tally_engine"
-    if str(GST_ENGINE) not in sys.path:
-        sys.path.insert(0, str(GST_ENGINE))
-    WEB_APP_DIR = SRC_ROOT / "web_app"
-    if str(WEB_APP_DIR) not in sys.path:
-        sys.path.insert(0, str(WEB_APP_DIR))
+    ENGINE_DIR = SRC_ROOT / "engine"
+    if str(ENGINE_DIR) not in sys.path:
+        sys.path.insert(0, str(ENGINE_DIR))
 
 import client_db
 import domain
@@ -1220,7 +1217,7 @@ def clear_client_returns(client_id: int):
     return {"status": "success", "message": "All return data cleared for client."}
 
 # Mount static frontend
-STATIC_DIR = get_bundle_dir() / "static" if getattr(sys, "frozen", False) else get_bundle_dir() / "web_app" / "static"
+STATIC_DIR = get_bundle_dir() / "static"
 if STATIC_DIR.exists():
     app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 

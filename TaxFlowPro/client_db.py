@@ -662,7 +662,7 @@ def save_party_mapping(data: Dict[str, Any]) -> Dict[str, Any]:
         reload_party_mappings()
     except Exception:
         try:
-            from gst_tally_engine.constants import reload_party_mappings
+            from constants import reload_party_mappings
             reload_party_mappings()
         except Exception:
             pass
@@ -744,7 +744,7 @@ def delete_party_mapping(gstin: str) -> bool:
         reload_party_mappings()
     except Exception:
         try:
-            from gst_tally_engine.constants import reload_party_mappings
+            from constants import reload_party_mappings
             reload_party_mappings()
         except Exception:
             pass
@@ -810,7 +810,7 @@ def clear_all_party_mappings() -> int:
         reload_party_mappings()
     except Exception:
         try:
-            from gst_tally_engine.constants import reload_party_mappings
+            from constants import reload_party_mappings
             reload_party_mappings()
         except Exception:
             pass

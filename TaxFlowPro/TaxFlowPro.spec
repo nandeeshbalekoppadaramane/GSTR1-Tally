@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('web_app/static', 'static')]
+datas = [('static', 'static')]
 binaries = []
 hiddenimports = ['uvicorn.logging', 'uvicorn.loops', 'uvicorn.loops.auto', 'uvicorn.protocols', 'uvicorn.protocols.http', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.websockets', 'uvicorn.protocols.websockets.auto', 'uvicorn.lifespan', 'uvicorn.lifespan.on']
 tmp_ret = collect_all('selenium')
@@ -10,7 +10,7 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 a = Analysis(
     ['launcher.py'],
-    pathex=['web_app', 'gst_tally_engine'],
+    pathex=['engine'],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,

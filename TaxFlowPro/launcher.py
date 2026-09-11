@@ -1,7 +1,7 @@
 """
 TaxFlow Pro - Packaged App Entry Point
 ---------------------------------------
-Entry point used by the PyInstaller build (see build_exe.py). Starts the
+Entry point used by the PyInstaller build (see TaxFlowPro.spec). Starts the
 FastAPI backend and opens the UI in the default browser. Running this
 directly with plain `python launcher.py` also works from source.
 """
@@ -15,10 +15,10 @@ from pathlib import Path
 import uvicorn
 
 # Only needed running from source - a frozen build already has every module
-# resolved at build time via PyInstaller's --paths (see build_exe.py).
+# resolved at build time via PyInstaller's pathex (see TaxFlowPro.spec).
 if not getattr(sys, "frozen", False):
     ROOT = Path(__file__).resolve().parent
-    for sub in (ROOT, ROOT / "web_app", ROOT / "gst_tally_engine"):
+    for sub in (ROOT, ROOT / "engine"):
         if str(sub) not in sys.path:
             sys.path.insert(0, str(sub))
 
