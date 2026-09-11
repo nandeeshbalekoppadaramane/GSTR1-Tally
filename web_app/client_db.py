@@ -16,6 +16,7 @@ from typing import List, Dict, Optional, Any
 from app_paths import get_data_root
 
 DB_PATH = get_data_root() / "client_memory.db"
+CSV_PATH = get_data_root() / "party_mappings.csv"
 
 STATE_CODES = {
     "01": "Jammu & Kashmir", "02": "Himachal Pradesh", "03": "Punjab", "04": "Chandigarh",
@@ -724,7 +725,7 @@ def delete_party_mapping(gstin: str) -> bool:
         deleted = c.rowcount > 0
 
     # Also remove from CSV
-    csv_path = ROOT / "party_mappings.csv"
+    csv_path = CSV_PATH
     if csv_path.exists():
         try:
             with open(csv_path, "r", encoding="utf-8") as f:
@@ -751,7 +752,7 @@ def delete_party_mapping(gstin: str) -> bool:
     return deleted
 
 def _sync_party_to_csv(gstin: str, trade_name: str, legal_name: str, state_name: str):
-    csv_path = ROOT / "party_mappings.csv"
+    csv_path = CSV_PATH
     rows = []
     fieldnames = ["gstin", "trade_name", "state", "total_docs", "legal_name"]
     found = False
@@ -796,7 +797,7 @@ def clear_all_party_mappings() -> int:
         c.execute("DELETE FROM party_mappings")
         conn.commit()
 
-    csv_path = ROOT / "party_mappings.csv"
+    csv_path = CSV_PATH
     try:
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=["gstin", "trade_name", "state", "total_docs", "legal_name"])
