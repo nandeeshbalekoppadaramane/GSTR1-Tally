@@ -98,10 +98,12 @@ def format_party_ledger(trade_name: str, gstin: str, preference: str = None) -> 
     - If preference is 'LEGAL': uses Legal Name; if empty/NA, defaults to Trade Name.
     - Appends (GSTIN) to the party name.
     - State suffix is removed as requested.
-    - For B2C (empty gstin): returns 'B2C Sales'.
+    - For any no-GSTIN document (B2C, B2C Large, exports, advances, ...): returns the
+      caller-supplied placeholder name as-is, so these consolidated sections keep
+      separate Tally ledgers instead of collapsing into one.
     """
     if not gstin:
-        return "B2C Sales"
+        return (trade_name or "B2C Sales").strip()
 
     pref = (preference or _NAME_PREFERENCE).upper()
     gstin = gstin.strip()

@@ -11,7 +11,7 @@
   <!-- Type system: Manrope (brand/headings), Inter (body/UI), IBM Plex Mono (financial figures) -->
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@600;700;800&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap">
   <!-- Custom CSS -->
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=2.3.0">
 </head>
 <body>
 
@@ -29,6 +29,10 @@
       </a>
 
       <div class="d-flex align-items-center gap-3">
+        <!-- Help Guide -->
+        <button class="btn btn-sm btn-outline-light" style="border-color: rgba(255,255,255,0.25);" data-bs-toggle="modal" data-bs-target="#helpModal" title="Help Guide">
+          <i class="fa-solid fa-circle-question me-1"></i> <span class="d-none d-md-inline">Help</span>
+        </button>
         <!-- Tally Connection Badge -->
         <div id="tallyStatusPill" class="status-pill status-checking" onclick="checkTallyStatus()" title="Click to refresh Tally connection">
           <span class="status-dot"></span>
@@ -226,7 +230,7 @@
                     <div>
                       <div class="text-muted small fw-semibold text-uppercase" style="font-size: 0.72rem;">Total Vouchers Ingested</div>
                       <div class="fs-4 fw-bold text-info mt-1" id="dashTotalDocs">0</div>
-                      <div class="small text-muted" style="font-size: 0.72rem;">Sales, B2C, Credit Notes</div>
+                      <div class="small text-muted" style="font-size: 0.72rem;">Sales, B2C, B2C Large, Exports, Advances, Credit/Debit Notes</div>
                     </div>
                     <div class="metric-icon-box bg-info-subtle text-info">
                       <i class="fa-solid fa-receipt"></i>
@@ -273,6 +277,9 @@
                   </div>
                 </div>
                 <div class="d-flex align-items-center flex-wrap gap-2">
+                  <button class="btn btn-teal btn-sm fw-semibold" onclick="openUploadModal()">
+                    <i class="fa-solid fa-cloud-arrow-up me-1"></i> Upload Returns
+                  </button>
                   <button class="btn btn-outline-primary btn-sm" onclick="switchToTab('overview-tab')">
                     <i class="fa-solid fa-calendar-days me-1"></i> Returns (Tab 2)
                   </button>
@@ -332,14 +339,11 @@
                   <p class="text-muted small mb-0">Consolidated breakdown of return periods for <strong id="companyGstinTitle" class="text-teal-dark">-</strong> (<span id="companyNameTitle">No Taxpayer Client</span>)</p>
                 </div>
                 <div class="d-flex gap-2">
+                  <button class="btn btn-teal btn-sm fw-semibold" onclick="openUploadModal()">
+                    <i class="fa-solid fa-cloud-arrow-up me-1"></i> Upload Returns
+                  </button>
                   <button class="btn btn-outline-danger btn-sm" onclick="clearClientReturnsPrompt()" title="Clear all uploaded return files for this client">
                     <i class="fa-solid fa-trash-can me-1"></i> Clear Returns
-                  </button>
-                  <button class="btn btn-outline-secondary btn-sm" onclick="fetchOverviewData()">
-                    <i class="fa-solid fa-rotate-right me-1"></i> Refresh
-                  </button>
-                  <button class="btn btn-teal btn-sm" onclick="switchToTab('tally-tab')">
-                    Proceed to Tally Export &rarr;
                   </button>
                 </div>
               </div>
@@ -353,6 +357,8 @@
                       <th class="text-center">B2B</th>
                       <th class="text-center">B2C</th>
                       <th class="text-center">CDNR</th>
+                      <th class="text-center">EXP</th>
+                      <th class="text-center">ADV</th>
                       <th class="text-center">Parties</th>
                       <th class="text-end">Taxable Value (₹)</th>
                       <th class="text-end">CGST (₹)</th>
@@ -364,7 +370,7 @@
                   </thead>
                   <tbody id="monthlyTableBody">
                     <tr>
-                      <td colspan="11" class="text-center py-4 text-muted">
+                      <td colspan="14" class="text-center py-4 text-muted">
                         <div class="spinner-border spinner-border-sm me-2 text-teal" role="status"></div>
                         Loading GSTR-1 monthly data...
                       </td>
@@ -444,9 +450,6 @@
                   <button class="btn btn-outline-danger btn-sm" onclick="clearAllPartyMappingsPrompt()" title="Delete all saved GSTIN mappings and reset to unverified">
                     <i class="fa-solid fa-trash-can me-1"></i> Reset
                   </button>
-                  <button class="btn btn-outline-secondary btn-sm" onclick="exportPartyMappings()" title="Export Party Mappings CSV">
-                    <i class="fa-solid fa-file-csv me-1"></i> CSV
-                  </button>
                 </div>
               </div>
 
@@ -500,22 +503,32 @@
               <div class="row align-items-center mb-3 g-2">
                 <div class="col-md-4">
                   <h5 class="fw-bold mb-1">Normalized Transactions Explorer</h5>
-                  <p class="text-muted small mb-0">Every sales invoice, credit note & B2C summary entry</p>
+                  <p class="text-muted small mb-0">Every sales invoice, B2C/B2C Large summary, export, advance-tax entry & credit/debit note</p>
                 </div>
-                <div class="col-md-5">
+                <div class="col-md-6">
                   <div class="input-group input-group-sm">
                     <span class="input-group-text bg-light"><i class="fa-solid fa-filter text-muted"></i></span>
-                    <input type="text" id="invSearchInput" class="form-control" placeholder="Search invoice number, GSTIN, party name..." onkeyup="filterInvoices()">
+                    <input type="text" id="invSearchInput" class="form-control" placeholder="Search invoice, GSTIN, party..." onkeyup="filterInvoices()">
                     <select id="invTypeFilter" class="form-select" style="max-width: 130px;" onchange="filterInvoices()">
                       <option value="">All Types</option>
                       <option value="B2B">B2B Sales</option>
+                      <option value="B2CL">B2C Large</option>
                       <option value="B2CS">B2C Retail</option>
-                      <option value="CDNR">Credit Notes</option>
+                      <option value="EXP">Exports</option>
+                      <option value="ADVANCE">Advances</option>
+                      <option value="CDNR">Credit/Debit Notes</option>
+                    </select>
+                    <select id="invStatusFilter" class="form-select" style="max-width: 140px;" onchange="filterInvoices()">
+                      <option value="">All Balances</option>
+                      <option value="balanced">Balanced (0.00)</option>
+                      <option value="rounded">Round Off (≤ ₹2)</option>
+                      <option value="discrepant">Mismatches (> ₹2)</option>
                     </select>
                   </div>
                 </div>
-                <div class="col-md-3 text-end">
-                  <span class="badge bg-primary me-2" id="invCountBadge">0 Vouchers</span>
+                <div class="col-md-2 text-end">
+                  <span class="badge bg-primary me-1" id="invCountBadge">0 Vouchers</span>
+                  <span class="badge bg-danger d-none" id="invDiscrepancyBadge">0 Mismatches</span>
                 </div>
               </div>
 
@@ -532,11 +545,12 @@
                       <th class="text-end">Taxable Value (₹)</th>
                       <th class="text-end">GST (₹)</th>
                       <th class="text-end">Invoice Total (₹)</th>
+                      <th class="text-center">Balance Status</th>
                     </tr>
                   </thead>
                   <tbody id="invoicesTableBody">
                     <tr>
-                      <td colspan="9" class="text-center py-4 text-muted">
+                      <td colspan="10" class="text-center py-4 text-muted">
                         <div class="spinner-border spinner-border-sm me-2 text-teal" role="status"></div>
                         Loading vouchers...
                       </td>
@@ -581,7 +595,7 @@
                 <!-- Column 1: XML Generation & Download -->
                 <div class="col-lg-6">
                   <div class="card border shadow-sm h-100">
-                    <div class="card-header bg-navy text-white py-3">
+                    <div class="card-header bg-dark-navy text-white py-3">
                       <h6 class="fw-bold mb-0 d-flex align-items-center justify-content-between">
                         <div class="d-flex align-items-center">
                           <i class="fa-solid fa-file-code me-2 text-teal fs-5"></i>
@@ -1075,7 +1089,8 @@
                 </div>
               </div>
               <p class="text-muted small mb-2" style="font-size: 0.76rem;">
-                Chrome will automatically type your Username & Password and place the cursor right into the CAPTCHA field. You only need to type the 6-character CAPTCHA and hit Enter!
+                Chrome runs in the background and automatically enters your Username & Password.
+                When the CAPTCHA appears, it shows up right here on this page — type what you see and click Submit to continue.
               </p>
               <div class="row g-2">
                 <div class="col-md-6">
@@ -1107,7 +1122,7 @@
               <div class="col-4">
                 <div class="p-2 border rounded bg-white">
                   <div class="text-teal fw-bold small"><i class="fa-solid fa-keyboard me-1"></i> Step 2</div>
-                  <div class="text-muted" style="font-size: 0.72rem;">Type CAPTCHA & Enter</div>
+                  <div class="text-muted" style="font-size: 0.72rem;">Type CAPTCHA shown here & Submit</div>
                 </div>
               </div>
               <div class="col-4">
@@ -1130,15 +1145,20 @@
               <div id="portalProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-teal" role="progressbar" style="width: 0%"></div>
             </div>
 
-            <!-- Manual Confirm Login Banner (Shown when waiting for login) -->
-            <div id="portalManualLoginBanner" class="alert alert-warning py-2 px-3 small d-flex align-items-center justify-content-between mb-3 d-none border-2 border-warning">
-              <div>
-                <i class="fa-solid fa-window-restore text-dark me-2 fs-5"></i>
-                <strong>Chrome is open:</strong> Switch to the new Chrome window (check your Windows Taskbar or press <kbd>Alt</kbd>+<kbd>Tab</kbd> if behind this window). Auto-fill entered credentials — just type the CAPTCHA and hit Enter!
+            <!-- CAPTCHA Relay (Shown when the headless login needs the CAPTCHA answer) -->
+            <div id="portalCaptchaSection" class="alert alert-warning py-3 px-3 mb-3 d-none border-2 border-warning">
+              <div class="d-flex align-items-center mb-2">
+                <i class="fa-solid fa-shield-halved text-dark me-2 fs-5"></i>
+                <strong>Type the characters shown in the image below to continue logging in.</strong>
               </div>
-              <button class="btn btn-warning btn-sm fw-bold px-3 py-1 shadow-sm text-nowrap ms-2" onclick="confirmPortalLogin()">
-                <i class="fa-solid fa-check me-1"></i> I Have Logged In
-              </button>
+              <div class="d-flex align-items-center gap-2 flex-wrap">
+                <img id="portalCaptchaImage" alt="CAPTCHA" class="border rounded bg-white p-1" style="height: 44px;">
+                <input type="text" id="portalCaptchaInput" class="form-control form-control-sm" style="max-width: 180px;"
+                       placeholder="Enter CAPTCHA" autocomplete="off" onkeydown="onCaptchaInputKeydown(event)">
+                <button class="btn btn-warning btn-sm fw-bold px-3" id="portalCaptchaSubmitBtn" onclick="submitPortalCaptcha()">
+                  <i class="fa-solid fa-arrow-right me-1"></i> Submit
+                </button>
+              </div>
             </div>
 
             <!-- Completion Banner (Shown when finished) -->
@@ -1308,9 +1328,146 @@
     </div>
   </div>
 
+  <!-- Help Guide Modal -->
+  <div class="modal fade" id="helpModal" tabindex="-1" aria-labelledby="helpModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header bg-dark-navy text-white">
+          <h5 class="modal-title" id="helpModalLabel"><i class="fa-solid fa-circle-question text-teal me-2"></i>TaxFlow Pro — Help Guide</h5>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+
+          <div class="alert alert-info d-flex align-items-start gap-2 py-2 px-3 mb-3" style="font-size: 0.85rem;">
+            <i class="fa-solid fa-circle-info mt-1"></i>
+            <div><strong>Quick start:</strong> (1) Add or select a client in <em>Client Management</em> &rarr;
+            (2) <em>Upload Returns</em> on that client's card with your GSTR-1 JSON/ZIP &rarr;
+            (3) Go to <em>TallyPrime XML Export</em>, generate the XML, and import it into a running TallyPrime instance.</div>
+          </div>
+
+          <div class="accordion" id="helpAccordion">
+
+            <div class="accordion-item">
+              <h2 class="accordion-header">
+                <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#help1">
+                  <i class="fa-solid fa-building me-2 text-teal"></i> 1. Client Management
+                </button>
+              </h2>
+              <div id="help1" class="accordion-collapse collapse show" data-bs-parent="#helpAccordion">
+                <div class="accordion-body small">
+                  <ul class="mb-2">
+                    <li>Click <strong>Add New Client</strong> and enter the taxpayer's GSTIN, name, and (optionally) their GST portal login. PAN and State are auto-derived from the GSTIN.</li>
+                    <li>Click a client card's <strong>Select Taxpayer</strong> to make it the active client — every other tab (Monthly Breakdown, Counterparties, Transactions, XML Export) then works only on that client's data.</li>
+                    <li>Use <strong>Upload Returns</strong> on a client card to ingest a GSTR-1 JSON or ZIP file straight from the GST portal. The filename should contain the return type and financial year so the app can sanity-check it against the selected period.</li>
+                    <li>Only the <em>extracted</em> invoice data is stored — raw uploaded JSON/ZIP files are parsed once and discarded, never written to disk.</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+            <div class="accordion-item">
+              <h2 class="accordion-header">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#help2">
+                  <i class="fa-solid fa-calendar-days me-2 text-teal"></i> 2. Monthly Breakdown &amp; Summary
+                </button>
+              </h2>
+              <div id="help2" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
+                <div class="accordion-body small">
+                  <p class="mb-2">One row per uploaded return period, with a document-type breakdown and tax totals:</p>
+                  <ul class="mb-2">
+                    <li><strong>B2B</strong> — standard registered-party sales invoices (incl. amendments)</li>
+                    <li><strong>B2C</strong> — unregistered-consumer sales, both small consolidated (B2CS) and single large interstate invoices &gt;₹2.5L (B2CL)</li>
+                    <li><strong>CDNR</strong> — credit &amp; debit notes, against registered or unregistered parties</li>
+                    <li><strong>EXP</strong> — export invoices (zero-rated, with or without IGST payment)</li>
+                    <li><strong>ADV</strong> — GST paid on advances received, and its later adjustment against a raised invoice</li>
+                  </ul>
+                  <p class="mb-0">Use <i class="fa-solid fa-trash-can text-danger"></i> on a row to delete just that period, or <strong>Clear Returns</strong> to wipe every period for the client.</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="accordion-item">
+              <h2 class="accordion-header">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#help3">
+                  <i class="fa-solid fa-address-card me-2 text-teal"></i> 3. Counterparties &amp; Master Ledgers
+                </button>
+              </h2>
+              <div id="help3" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
+                <div class="accordion-body small">
+                  <ul class="mb-2">
+                    <li>Lists every distinct GSTIN found across the client's uploaded invoices, with the Trade/Legal name that will be used for its Tally ledger.</li>
+                    <li><strong>Verify via GST Portal</strong> launches an automated, headless lookup against the official GST portal to fetch the real registered Trade Name, Legal Name, and status for each GSTIN. You'll be asked to solve one CAPTCHA per login attempt on-screen; verified names are then saved permanently and reused on every future export.</li>
+                    <li>You can also manually edit a party's Trade/Legal name at any time — manual edits are saved permanently and take priority.</li>
+                    <li>The <strong>Trade Name / Legal Name</strong> toggle (in the top toolbar) switches which name is used to build every ledger across the whole app.</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+            <div class="accordion-item">
+              <h2 class="accordion-header">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#help4">
+                  <i class="fa-solid fa-table-list me-2 text-teal"></i> 4. Transactions Explorer
+                </button>
+              </h2>
+              <div id="help4" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
+                <div class="accordion-body small">
+                  <p class="mb-0">Every normalized document behind the summary numbers — searchable by invoice number, GSTIN, or party name, and filterable by type (B2B, B2C Large, B2C Retail, Exports, Advances, Credit/Debit Notes). This is the place to spot-check a number before it goes into Tally.</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="accordion-item">
+              <h2 class="accordion-header">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#help5">
+                  <i class="fa-solid fa-paper-plane me-2 text-teal"></i> 5. TallyPrime XML Export &amp; Live Import
+                </button>
+              </h2>
+              <div id="help5" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
+                <div class="accordion-body small">
+                  <ol class="mb-2">
+                    <li><strong>Generate XML</strong> builds two files from the currently loaded data: <code>Consolidated_Masters.xml</code> (ledgers to create) and <code>Consolidated_Entries.xml</code> (vouchers to post).</li>
+                    <li>Download them for manual import via Tally's <em>Import Data</em> menu, or click <strong>Import to Tally</strong> to POST them directly over HTTP.</li>
+                    <li>Direct import requires TallyPrime to be running locally with its HTTP server enabled on port 9000 (Gateway of Tally &rarr; F1 Help &rarr; Settings &rarr; Connectivity). The status pill in the top-right shows whether it's currently reachable.</li>
+                    <li><strong>Always import Masters before Entries</strong> — vouchers reference ledgers that must already exist in the company.</li>
+                  </ol>
+                </div>
+              </div>
+            </div>
+
+            <div class="accordion-item">
+              <h2 class="accordion-header">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#help6">
+                  <i class="fa-solid fa-triangle-exclamation me-2 text-teal"></i> Troubleshooting &amp; Limits
+                </button>
+              </h2>
+              <div id="help6" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
+                <div class="accordion-body small">
+                  <ul class="mb-0">
+                    <li><strong>"Cannot connect to TallyPrime"</strong> — Tally isn't running, the company isn't open, or the HTTP server / port 9000 isn't enabled. Click the status pill to re-check.</li>
+                    <li><strong>Upload rejected for filename/FY mismatch</strong> — the uploaded file's name must contain the GSTR return type and financial year so it isn't accidentally filed under the wrong period.</li>
+                    <li><strong>Batch capped at 10,000 invoices</strong> — split very large returns month-on-month (MOM) before uploading.</li>
+                    <li><strong>Zero-value invoices</strong> are intentionally excluded from the XML — they carry no accounting entry.</li>
+                    <li><strong>GST portal verification stuck on a CAPTCHA</strong> — you have 5 minutes to type the answer shown; it retries automatically up to 3 times on a wrong answer before failing that GSTIN.</li>
+                    <li>GSTR-2B (purchase-side ITC) ingestion is not yet supported — this release covers GSTR-1 (sales) only.</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+        <div class="modal-footer">
+          <span class="text-muted small me-auto">All processing is local — no invoice data ever leaves this machine except to your own Tally instance.</span>
+          <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Bootstrap JS Bundle -->
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   <!-- App JS -->
-  <script src="app.js"></script>
+  <script src="app.js?v=2.3.0"></script>
 </body>
 </html>

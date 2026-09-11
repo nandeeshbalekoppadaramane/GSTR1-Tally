@@ -1,42 +1,43 @@
 """
 GST Portal Taxpayer Verification Service
 -----------------------------------------
-Automates official GST portal taxpayer lookup:
-1. Launches Chrome browser to GST login page.
-2. Waits for user to log in (or accepts manual confirmation).
-3. Automatically handles Aadhaar / 'Remind Me Later' popup.
-4. Navigates to Search Taxpayer -> Search by GSTIN/UIN.
-5. Ingests GSTINs, extracts official Legal Name, Trade Name, Status, and Jurisdictions.
-6. Permanently saves Trade & Legal Name mappings into SQLite database and party_mappings.csv.
+Automates official GST portal taxpayer lookup, fully headless:
+1. Launches headless Chrome and opens the GST login page.
+2. Auto-fills the saved username/password for the active client.
+3. Captures the CAPTCHA image and hands it to the UI; blocks until the user
+   types the answer into our own page and submits it.
+4. Submits the CAPTCHA answer and completes login (retries with a fresh
+   CAPTCHA up to a few times if the answer was wrong).
+5. Navigates to Search Taxpayer -> Search by GSTIN/UIN.
+6. Ingests GSTINs, extracts official Legal Name, Trade Name, Status, and Jurisdictions.
+7. Permanently saves Trade & Legal Name mappings into SQLite database and party_mappings.csv.
+
+Headless mode was validated against the live portal before this was wired in -
+see gst_headless_captcha_poc.py for the original proof-of-concept: navigator.webdriver
+is successfully hidden, the portal shows no sign of detecting/blocking headless Chrome,
+and the CAPTCHA image renders normally.
 """
 
 import os
-import sys
 import time
 import re
 import threading
-from pathlib import Path
 from typing import List, Dict, Optional, Any
 
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
-from selenium.common.exceptions import (
-    TimeoutException,
-    NoSuchElementException,
-    ElementClickInterceptedException,
-    ElementNotInteractableException,
-    StaleElementReferenceException,
-    WebDriverException
-)
 
 import client_db
 
 LOGIN_URL = "https://services.gst.gov.in/services/login"
-AUTHENTICATED_SEARCH_URL = "https://services.gst.gov.in/services/auth/searchtp"
+CAPTCHA_TABLE_XPATH = '/html/body/div[2]/div[2]/div/div[2]/div/div/div/div/div/form/div[5]/div/div/div/table/tbody'
+MAX_CAPTCHA_ATTEMPTS = 3
+CAPTCHA_ANSWER_TIMEOUT_SECONDS = 300
 
 STATE_CODES = {
     "01": "Jammu & Kashmir", "02": "Himachal Pradesh", "03": "Punjab", "04": "Chandigarh",
@@ -52,206 +53,37 @@ STATE_CODES = {
 }
 
 
-def _switch_to_default_desktop():
-    """Ensures current thread is bound to interactive 'default' desktop."""
-    if sys.platform != "win32":
-        return
-    try:
-        import ctypes
-        user32 = ctypes.windll.user32
-        hDesk = user32.OpenDesktopW("default", 0, False, 0x01FF)
-        if hDesk:
-            user32.SetThreadDesktop(hDesk)
-    except Exception as e:
-        print(f"[Desktop] Notice: {e}")
-
-
-def _find_chrome_executable() -> Optional[str]:
-    """Finds Google Chrome executable path on Windows."""
-    candidates = [
-        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-        os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
-        os.path.expandvars(r"%PROGRAMFILES%\Google\Chrome\Application\chrome.exe"),
-        os.path.expandvars(r"%PROGRAMFILES(X86)%\Google\Chrome\Application\chrome.exe"),
-    ]
-    for cand in candidates:
-        if os.path.exists(cand):
-            return cand
-    return None
-
-
-def _get_free_port() -> int:
-    """Finds a free local TCP port for Chrome DevTools Protocol."""
-    import socket
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(('127.0.0.1', 0))
-        return s.getsockname()[1]
-
-
-def _bring_window_to_foreground(driver: webdriver.Chrome):
-    """Reliably brings the Selenium Chrome window to the foreground on Windows."""
-    _switch_to_default_desktop()
-    try:
-        driver.switch_to.window(driver.current_window_handle)
-    except Exception:
-        pass
-
-    try:
-        import ctypes
-        user32 = ctypes.windll.user32
-        kernel32 = ctypes.windll.kernel32
-
-        def enum_cb(hwnd, _):
-            if user32.IsWindowVisible(hwnd):
-                length = user32.GetWindowTextLengthW(hwnd)
-                buff = ctypes.create_unicode_buffer(length + 1)
-                user32.GetWindowTextW(hwnd, buff, length + 1)
-                title = buff.value.lower()
-                if "gst" in title or "goods & services tax" in title or "login" in title or "chrome" in title:
-                    user32.AllowSetForegroundWindow(-1)
-                    fore_hwnd = user32.GetForegroundWindow()
-                    fore_thread = user32.GetWindowThreadProcessId(fore_hwnd, 0)
-                    cur_thread = kernel32.GetCurrentThreadId()
-
-                    if fore_thread != cur_thread:
-                        user32.AttachThreadInput(cur_thread, fore_thread, True)
-                        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-                        user32.SetForegroundWindow(hwnd)
-                        user32.BringWindowToTop(hwnd)
-                        user32.SetFocus(hwnd)
-                        user32.AttachThreadInput(cur_thread, fore_thread, False)
-                    else:
-                        user32.ShowWindow(hwnd, 9)
-                        user32.SetForegroundWindow(hwnd)
-                        user32.BringWindowToTop(hwnd)
-                        user32.SetFocus(hwnd)
-
-                    # Momentarily set TOPMOST then NOTOPMOST to force window over full-screen apps
-                    SWP_FLAGS = 0x0002 | 0x0001 | 0x0040
-                    user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, SWP_FLAGS)
-                    user32.SetWindowPos(hwnd, -2, 0, 0, 0, 0, SWP_FLAGS)
-                    user32.SetForegroundWindow(hwnd)
-            return True
-
-        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
-        user32.EnumWindows(WNDENUMPROC(enum_cb), 0)
-    except Exception as e:
-        print(f"[WARN] Failed bringing Chrome window to foreground: {e}")
-
-
-def _initialize_driver() -> tuple:
-    """
-    Initializes modern Chrome WebDriver.
-    On Windows, uses Win32 CreateProcessW with lpDesktop='WinSta0\\default' to ensure
-    Chrome opens directly on the user's interactive desktop, and attaches via Chrome DevTools.
-    Returns (driver, chrome_process_info).
-    """
+def _initialize_driver() -> webdriver.Chrome:
+    """Initializes headless Chrome. This exact configuration (headless=new + the
+    navigator.webdriver patch) was validated against the live GST portal in
+    gst_headless_captcha_poc.py before being wired into the app."""
     import tempfile
     temp_profile_dir = tempfile.mkdtemp(prefix="gst_chrome_clean_")
 
-    if sys.platform == "win32":
-        chrome_exe = _find_chrome_executable()
-        if chrome_exe:
-            try:
-                import ctypes
-                from ctypes import wintypes
-                kernel32 = ctypes.windll.kernel32
-                user32 = ctypes.windll.user32
-
-                class STARTUPINFOW(ctypes.Structure):
-                    _fields_ = [
-                        ("cb", wintypes.DWORD),
-                        ("lpReserved", wintypes.LPWSTR),
-                        ("lpDesktop", wintypes.LPWSTR),
-                        ("lpTitle", wintypes.LPWSTR),
-                        ("dwX", wintypes.DWORD),
-                        ("dwY", wintypes.DWORD),
-                        ("dwXSize", wintypes.DWORD),
-                        ("dwYSize", wintypes.DWORD),
-                        ("dwXCountChars", wintypes.DWORD),
-                        ("dwYCountChars", wintypes.DWORD),
-                        ("dwFillAttribute", wintypes.DWORD),
-                        ("dwFlags", wintypes.DWORD),
-                        ("wShowWindow", wintypes.WORD),
-                        ("cbReserved2", wintypes.WORD),
-                        ("lpReserved2", ctypes.c_char_p),
-                        ("hStdInput", wintypes.HANDLE),
-                        ("hStdOutput", wintypes.HANDLE),
-                        ("hStdError", wintypes.HANDLE),
-                    ]
-
-                class PROCESS_INFORMATION(ctypes.Structure):
-                    _fields_ = [
-                        ("hProcess", wintypes.HANDLE),
-                        ("hThread", wintypes.HANDLE),
-                        ("dwProcessId", wintypes.DWORD),
-                        ("dwThreadId", wintypes.DWORD),
-                    ]
-
-                _switch_to_default_desktop()
-                port = _get_free_port()
-
-                si = STARTUPINFOW()
-                si.cb = ctypes.sizeof(STARTUPINFOW)
-                si.lpDesktop = r"WinSta0\default"
-                pi = PROCESS_INFORMATION()
-
-                cmd_line = (
-                    f'"{chrome_exe}" '
-                    f'--remote-debugging-port={port} '
-                    f'--user-data-dir="{temp_profile_dir}" '
-                    f'--new-window '
-                    f'--start-maximized '
-                    f'--no-first-run '
-                    f'--no-default-browser-check '
-                    f'--disable-infobars '
-                    f'--disable-extensions '
-                    f'--window-position=30,30 '
-                    f'--window-size=1366,850 '
-                    f'"{LOGIN_URL}"'
-                )
-
-                created = kernel32.CreateProcessW(
-                    None, cmd_line, None, None, False, 0, None, None,
-                    ctypes.byref(si), ctypes.byref(pi)
-                )
-
-                if created:
-                    time.sleep(1.2)
-                    options = webdriver.ChromeOptions()
-                    options.add_experimental_option("debuggerAddress", f"127.0.0.1:{port}")
-                    driver = webdriver.Chrome(options=options)
-                    if driver.window_handles:
-                        driver.switch_to.window(driver.window_handles[0])
-                    driver.set_page_load_timeout(60)
-                    return driver, pi
-            except Exception as e:
-                print(f"[Driver] Win32 CreateProcess launch fallback due to: {e}")
-
-    # Standard fallback
     options = webdriver.ChromeOptions()
+    options.add_argument("--headless=new")
     options.add_argument(f"--user-data-dir={temp_profile_dir}")
-    options.add_argument("--new-window")
-    options.add_argument("--start-maximized")
-    options.add_argument("--window-size=1366,850")
-    options.add_argument("--window-position=30,30")
-    options.add_argument("--no-first-run")
-    options.add_argument("--no-default-browser-check")
-    options.add_argument("--disable-infobars")
-    options.add_argument("--disable-extensions")
+    options.add_argument("--window-size=1366,900")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-
+    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-extensions")
+    options.add_argument("--no-first-run")
+    options.add_argument("--no-default-browser-check")
+    options.add_argument(
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    )
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option("useAutomationExtension", False)
     prefs = {
         "credentials_enable_service": False,
         "profile.password_manager_enabled": False,
         "profile.default_content_setting_values.notifications": 2,
-        "chrome.autofill.enabled": False
     }
     options.add_experimental_option("prefs", prefs)
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
 
+    driver = None
     custom_candidates = [
         r"C:\chromedriver-win64\chromedriver.exe",
         r"C:\Program Files\Google\Chrome\Application\chromedriver.exe",
@@ -262,40 +94,149 @@ def _initialize_driver() -> tuple:
             try:
                 service = Service(executable_path=cand)
                 driver = webdriver.Chrome(service=service, options=options)
-                driver.set_page_load_timeout(60)
-                return driver, None
+                break
             except Exception:
                 pass
+    if driver is None:
+        driver = webdriver.Chrome(options=options)
 
-    driver = webdriver.Chrome(options=options)
+    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+        "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+    })
     driver.set_page_load_timeout(60)
-    return driver, None
+    return driver
 
 
-def _handle_aadhaar_popup(driver: webdriver.Chrome) -> bool:
-    """Handles the optional Aadhaar/Remind Me Later pop-up."""
-    short_wait = WebDriverWait(driver, 4)
-    popup_xpath = (
-        '//*[@id="caNumpopupV"]/div/div/div[2]/a[2] | '
-        '//div[@id="caNumpopupV"]//a[2] | '
-        '//button[contains(translate(normalize-space(), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "remind")] | '
-        '//a[contains(translate(normalize-space(), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "remind")] | '
-        '//button[contains(translate(normalize-space(), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "later")]'
+def _fill_credentials(driver: webdriver.Chrome, wait: WebDriverWait, username: str, password: str):
+    """Fills username/password - this is what makes the CAPTCHA table appear on the page."""
+    user_elem = wait.until(EC.visibility_of_element_located((By.ID, "username")))
+    user_elem.clear()
+    user_elem.send_keys(username)
+    driver.execute_script(
+        "arguments[0].dispatchEvent(new Event('input', {bubbles:true}));"
+        "arguments[0].dispatchEvent(new Event('change', {bubbles:true}));",
+        user_elem
+    )
+
+    pass_elem = wait.until(EC.visibility_of_element_located((By.ID, "user_pass")))
+    pass_elem.clear()
+    pass_elem.send_keys(password)
+    driver.execute_script(
+        "arguments[0].dispatchEvent(new Event('input', {bubbles:true}));"
+        "arguments[0].dispatchEvent(new Event('change', {bubbles:true}));",
+        pass_elem
+    )
+
+
+def _capture_captcha_image(driver: webdriver.Chrome, wait: WebDriverWait) -> Optional[str]:
+    """Waits for the CAPTCHA table to render and returns a base64 PNG of just the
+    CAPTCHA image - falls back to a screenshot of the whole table if no <img> tag
+    is found inside it (e.g. if the portal changes to canvas rendering)."""
+    try:
+        table = wait.until(EC.visibility_of_element_located((By.XPATH, CAPTCHA_TABLE_XPATH)))
+    except Exception:
+        return None
+    try:
+        img = table.find_element(By.TAG_NAME, "img")
+        return img.screenshot_as_base64
+    except Exception:
+        try:
+            return table.screenshot_as_base64
+        except Exception:
+            return None
+
+
+def _submit_captcha_and_login(driver: webdriver.Chrome, answer: str):
+    """Types the CAPTCHA answer into the login form and submits it."""
+    cap_elem = driver.find_element(By.ID, "captcha")
+    cap_elem.clear()
+    cap_elem.send_keys(answer)
+    driver.execute_script(
+        "arguments[0].dispatchEvent(new Event('input', {bubbles:true}));"
+        "arguments[0].dispatchEvent(new Event('change', {bubbles:true}));",
+        cap_elem
+    )
+
+    login_btn_xpath = (
+        "//button[contains(translate(normalize-space(.), "
+        "'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'login')] | "
+        "//input[@type='submit']"
     )
     try:
-        remind_me_btn = short_wait.until(EC.element_to_be_clickable((By.XPATH, popup_xpath)))
+        btn = driver.find_element(By.XPATH, login_btn_xpath)
         try:
-            remind_me_btn.click()
+            btn.click()
         except Exception:
-            driver.execute_script("arguments[0].click();", remind_me_btn)
-        time.sleep(1.2)
-        return True
+            driver.execute_script("arguments[0].click();", btn)
+    except Exception:
+        cap_elem.send_keys(Keys.RETURN)
+
+
+def _is_login_successful(driver: webdriver.Chrome) -> bool:
+    try:
+        cur_url = driver.current_url.lower()
+        return ("services/auth" in cur_url or "fowelcome" in cur_url) and "accessdenied" not in cur_url
     except Exception:
         return False
 
 
+def _find_first(driver: webdriver.Chrome, xpaths: List[str], timeout: float = 0):
+    """Tries each xpath IN ORDER, polling all of them together for up to `timeout`
+    seconds if none are immediately present. Always re-checks earlier (more
+    specific/confirmed) xpaths before later fallbacks on every poll tick - unlike
+    an XPath union ('a | b'), which returns whichever matches first in DOCUMENT
+    ORDER regardless of which alternative you actually listed first, and unlike
+    waiting out a full timeout on xpath 1 before ever trying xpath 2."""
+    deadline = time.time() + timeout
+    while True:
+        for xp in xpaths:
+            try:
+                els = driver.find_elements(By.XPATH, xp)
+                if els:
+                    return els[0]
+            except Exception:
+                continue
+        if time.time() >= deadline:
+            return None
+        time.sleep(0.3)
+
+
+def _click(driver: webdriver.Chrome, element):
+    try:
+        element.click()
+    except Exception:
+        driver.execute_script("arguments[0].click();", element)
+
+
+def _handle_aadhaar_popup(driver: webdriver.Chrome) -> bool:
+    """Handles the optional Aadhaar/Remind Me Later pop-up. Confirmed-working exact
+    xpath tried first, generic text-matching fallbacks only if that's not found."""
+    btn = _find_first(driver, [
+        '//*[@id="caNumpopupV"]/div/div/div[2]/a[2]',
+        '//div[@id="caNumpopupV"]//a[2]',
+        '//button[contains(translate(normalize-space(), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "remind")]',
+        '//a[contains(translate(normalize-space(), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "remind")]',
+        '//button[contains(translate(normalize-space(), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "later")]',
+    ], timeout=4)
+    if not btn:
+        return False
+    _click(driver, btn)
+    time.sleep(1.2)
+    return True
+
+
 def _navigate_to_search_page(driver: webdriver.Chrome, wait: WebDriverWait) -> bool:
-    """Navigates to Search Taxpayer -> Search by GSTIN/UIN."""
+    """Navigates to Search Taxpayer -> Search by GSTIN/UIN by clicking through the
+    real menu, exactly the way a human does:
+      1. Dismiss the Aadhaar popup if it appears: //*[@id="caNumpopupV"]/div/div/div[2]/a[2]
+      2. Click Search Taxpayer:                  //*[@id="main"]/ul/li[5]/a
+      3. Click Search by GSTIN/UIN:               //*[@id="main"]/ul/li[5]/ul[1]/li[1]/a
+
+    This deliberately never hard-navigates (driver.get()) straight to a sub-route.
+    The GST portal is an Angular SPA - a fresh page load of a sub-route doesn't
+    carry the app's client-side session/routing state, so it unreliably bounces
+    back to login or lands somewhere wrong. Only clicking through the menu works.
+    """
     try:
         input_elem = driver.find_element(By.ID, "for_gstin")
         if input_elem.is_displayed():
@@ -306,49 +247,37 @@ def _navigate_to_search_page(driver: webdriver.Chrome, wait: WebDriverWait) -> b
     _handle_aadhaar_popup(driver)
 
     try:
-        cur_url = driver.current_url.lower()
-        if "services/auth" in cur_url:
-            if "searchtp" not in cur_url:
-                driver.get(AUTHENTICATED_SEARCH_URL)
-                time.sleep(1.2)
-                _handle_aadhaar_popup(driver)
-            if driver.find_elements(By.ID, "for_gstin") and driver.find_element(By.ID, "for_gstin").is_displayed():
-                return True
-    except Exception:
-        pass
-
-    try:
         if "accessdenied" in driver.current_url.lower():
-            try:
-                dash = driver.find_element(By.XPATH, "//a[contains(text(), 'Dashboard')] | //a[contains(@class, 'navbar-brand')]")
-                dash.click()
+            dash = _find_first(driver, [
+                "//a[contains(@class, 'navbar-brand')]",
+                "//a[contains(text(), 'Dashboard')]",
+            ])
+            if dash:
+                _click(driver, dash)
                 time.sleep(1.5)
                 _handle_aadhaar_popup(driver)
-            except Exception:
-                pass
 
-        search_taxpayer_xpath = '//*[@id="main"]/ul/li[5]/a | //a[contains(normalize-space(), "Search Taxpayer")]'
-        search_taxpayer_menu = wait.until(EC.presence_of_element_located((By.XPATH, search_taxpayer_xpath)))
+        search_taxpayer_menu = _find_first(driver, [
+            '//*[@id="main"]/ul/li[5]/a',
+            '//a[contains(normalize-space(), "Search Taxpayer")]',
+        ], timeout=20)
+        if not search_taxpayer_menu:
+            return False
 
         try:
             ActionChains(driver).move_to_element(search_taxpayer_menu).perform()
         except Exception:
             pass
-
-        try:
-            search_taxpayer_menu.click()
-        except Exception:
-            driver.execute_script("arguments[0].click();", search_taxpayer_menu)
-
+        _click(driver, search_taxpayer_menu)
         time.sleep(0.5)
 
-        search_gstin_xpath = '//*[@id="main"]/ul/li[5]/ul[1]/li[1]/a | //a[contains(normalize-space(), "Search by GSTIN")]'
-        search_by_gstin_link = wait.until(EC.presence_of_element_located((By.XPATH, search_gstin_xpath)))
-
-        try:
-            search_by_gstin_link.click()
-        except Exception:
-            driver.execute_script("arguments[0].click();", search_by_gstin_link)
+        search_by_gstin_link = _find_first(driver, [
+            '//*[@id="main"]/ul/li[5]/ul[1]/li[1]/a',
+            '//a[contains(normalize-space(), "Search by GSTIN")]',
+        ], timeout=20)
+        if not search_by_gstin_link:
+            return False
+        _click(driver, search_by_gstin_link)
 
         wait.until(EC.visibility_of_element_located((By.ID, "for_gstin")))
         return True
@@ -369,8 +298,8 @@ def _extract_jurisdictions(driver: webdriver.Chrome) -> tuple:
     try:
         js_data = driver.execute_script("""
             try {
-                var el = document.querySelector('#lottable') || 
-                         document.querySelector('#partners') || 
+                var el = document.querySelector('#lottable') ||
+                         document.querySelector('#partners') ||
                          document.querySelector('form[name="searchtax"]') ||
                          document.querySelector('#for_gstin');
                 if (window.angular && el) {
@@ -568,9 +497,8 @@ class PortalVerificationService:
         self._lock = threading.Lock()
         self.is_running: bool = False
         self.driver: Optional[webdriver.Chrome] = None
-        self._chrome_pi: Optional[Any] = None
-        self.status: str = "idle"  # idle, starting, waiting_login, navigating, verifying, completed, error, cancelled
-        self.login_confirmed: bool = False
+        # idle, starting, waiting_captcha, navigating, verifying, completed, error, cancelled
+        self.status: str = "idle"
         self.should_stop: bool = False
         self.progress: int = 0
         self.total: int = 0
@@ -578,6 +506,8 @@ class PortalVerificationService:
         self.logs: List[str] = []
         self.results: List[Dict[str, Any]] = []
         self.error_message: Optional[str] = None
+        self.captcha_image_b64: Optional[str] = None
+        self.captcha_answer: Optional[str] = None
         self._worker_thread: Optional[threading.Thread] = None
 
     def _log(self, message: str):
@@ -599,13 +529,28 @@ class PortalVerificationService:
                 "current_gstin": self.current_gstin,
                 "logs": list(self.logs),
                 "results": list(self.results),
-                "error": self.error_message
+                "error": self.error_message,
+                "captcha_image_b64": self.captcha_image_b64,
             }
 
-    def confirm_login(self):
-        """User manual click indicating they have finished login in Chrome."""
-        self._log("User manual login confirmation received.")
-        self.login_confirmed = True
+    def submit_captcha(self, answer: str):
+        """Called from the API once the user has read the CAPTCHA image shown on our
+        own page and typed in what they see."""
+        clean = (answer or "").strip()
+        with self._lock:
+            self.captcha_answer = clean
+        self._log(f"CAPTCHA answer submitted: '{clean}'")
+
+    def _wait_for_captcha_answer(self, timeout_seconds: int = CAPTCHA_ANSWER_TIMEOUT_SECONDS) -> Optional[str]:
+        poll_start = time.time()
+        while not self.should_stop:
+            with self._lock:
+                if self.captcha_answer:
+                    return self.captcha_answer
+            if time.time() - poll_start > timeout_seconds:
+                return None
+            time.sleep(0.4)
+        return None
 
     def reset(self):
         """Completely resets verifier state to clean idle state."""
@@ -614,16 +559,19 @@ class PortalVerificationService:
             self.status = "idle"
             self.is_running = False
             self.should_stop = False
-            self.login_confirmed = False
             self.progress = 0
             self.total = 0
             self.current_gstin = ""
             self.logs = []
             self.results = []
             self.error_message = None
+            self.captcha_image_b64 = None
+            self.captcha_answer = None
 
     def cancel(self):
-        """Cancels verification session and cleanly shuts down Chrome."""
+        """Cancels verification session and waits for the worker thread to actually
+        stop before releasing control, so a subsequent start() can't race the old
+        thread's own cleanup (which would otherwise fight over self.driver)."""
         self._log("Cancellation requested by user.")
         self.should_stop = True
         self.status = "cancelled"
@@ -633,60 +581,34 @@ class PortalVerificationService:
             except Exception:
                 pass
             self.driver = None
-        if hasattr(self, "_chrome_pi") and self._chrome_pi:
-            try:
-                import ctypes
-                kernel32 = ctypes.windll.kernel32
-                kernel32.TerminateProcess(self._chrome_pi.hProcess, 0)
-                kernel32.CloseHandle(self._chrome_pi.hProcess)
-                kernel32.CloseHandle(self._chrome_pi.hThread)
-            except Exception:
-                pass
-            self._chrome_pi = None
+        if self._worker_thread and self._worker_thread.is_alive():
+            self._worker_thread.join(timeout=10)
         self.is_running = False
 
     def start(self, gstins: List[str], gst_username: Optional[str] = None, gst_password: Optional[str] = None) -> bool:
+        if not gst_username or not gst_password:
+            self._log("Error: GST Portal username & password are required - headless mode has "
+                       "no visible browser window for manual login.")
+            with self._lock:
+                self.status = "error"
+                self.error_message = "GST Portal username & password are required. Save them on the client profile first."
+                self.is_running = False
+            return False
+
         with self._lock:
-            # If thread finished or died, clear running flag
-            if self._worker_thread and not self._worker_thread.is_alive():
-                self.is_running = False
-                self._worker_thread = None
-
-            # If previous run was completed, error, or cancelled, reset cleanly
-            if self.status in ("completed", "cancelled", "error", "idle"):
-                self.is_running = False
-
-            # If still marked running, gracefully cancel previous run and proceed
-            if self.is_running:
-                self.should_stop = True
-                if self.driver:
-                    try:
-                        self.driver.quit()
-                    except Exception:
-                        pass
-                    self.driver = None
-                if hasattr(self, "_chrome_pi") and self._chrome_pi:
-                    try:
-                        import ctypes
-                        kernel32 = ctypes.windll.kernel32
-                        kernel32.TerminateProcess(self._chrome_pi.hProcess, 0)
-                        kernel32.CloseHandle(self._chrome_pi.hProcess)
-                        kernel32.CloseHandle(self._chrome_pi.hThread)
-                    except Exception:
-                        pass
-                    self._chrome_pi = None
-                self.is_running = False
-
+            if self.is_running or (self._worker_thread and self._worker_thread.is_alive()):
+                return False
             self.is_running = True
             self.status = "starting"
             self.should_stop = False
-            self.login_confirmed = False
             self.progress = 0
             self.total = len(gstins)
             self.current_gstin = ""
             self.logs = []
             self.results = []
             self.error_message = None
+            self.captcha_image_b64 = None
+            self.captcha_answer = None
 
         self._worker_thread = threading.Thread(
             target=self._worker_loop,
@@ -696,7 +618,7 @@ class PortalVerificationService:
         self._worker_thread.start()
         return True
 
-    def _worker_loop(self, gstins: List[str], gst_username: Optional[str] = None, gst_password: Optional[str] = None):
+    def _worker_loop(self, gstins: List[str], gst_username: str, gst_password: str):
         clean_gstins = [re.sub(r'[^A-Za-z0-9]', '', g).upper() for g in gstins if g]
         clean_gstins = [g for g in clean_gstins if len(g) == 15]
 
@@ -713,100 +635,89 @@ class PortalVerificationService:
 
         self._log(f"Starting GSTIN portal verification for {len(clean_gstins)} taxpayers...")
         try:
-            self._log("Launching Chrome browser...")
-            self.driver, self._chrome_pi = _initialize_driver()
+            self._log("Launching headless Chrome...")
+            self.driver = _initialize_driver()
             standard_wait = WebDriverWait(self.driver, 20)
 
             self._log(f"Opening GST portal login page: {LOGIN_URL}")
             self.driver.get(LOGIN_URL)
-            with self._lock:
-                self.status = "waiting_login"
 
-            # Pop Chrome window to the front immediately
-            _bring_window_to_foreground(self.driver)
+            self._log(f"Entering saved credentials for user '{gst_username}'...")
+            _fill_credentials(self.driver, standard_wait, gst_username, gst_password)
 
-            # Auto-enter credentials if provided
-            if gst_username and gst_password:
-                self._log(f"Auto-entering GST Portal credentials for user '{gst_username}'...")
-                try:
-                    time.sleep(0.6)
-                    user_elem = standard_wait.until(EC.visibility_of_element_located((By.XPATH, '//*[@id="username"]')))
-                    user_elem.clear()
-                    user_elem.send_keys(gst_username)
-                    self.driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", user_elem)
+            login_success = False
+            for attempt in range(1, MAX_CAPTCHA_ATTEMPTS + 1):
+                if self.should_stop:
+                    self._log("Verification aborted before login.")
+                    return
 
-                    pass_elem = standard_wait.until(EC.visibility_of_element_located((By.XPATH, '//*[@id="user_pass"]')))
-                    pass_elem.clear()
-                    pass_elem.send_keys(gst_password)
-                    self.driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true })); arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", pass_elem)
+                captcha_b64 = _capture_captcha_image(self.driver, standard_wait)
+                if not captcha_b64:
+                    raise RuntimeError("Could not locate the CAPTCHA image on the login page.")
 
-                    time.sleep(0.3)
-                    # Automatically put cursor focus on CAPTCHA field
-                    try:
-                        cap_wait = WebDriverWait(self.driver, 5)
-                        cap_elem = cap_wait.until(EC.visibility_of_element_located((By.ID, "captcha")))
-                        cap_elem.click()
-                        cap_elem.clear()
-                    except Exception:
-                        pass
+                with self._lock:
+                    self.captcha_image_b64 = captcha_b64
+                    self.captcha_answer = None
+                    self.status = "waiting_captcha"
+                self._log(f"CAPTCHA ready (attempt {attempt}/{MAX_CAPTCHA_ATTEMPTS}). "
+                          f"Waiting for the answer to be submitted...")
 
-                    _bring_window_to_foreground(self.driver)
-                    self._log("CREDENTIALS AUTO-ENTERED! Cursor is focused on CAPTCHA box.")
-                    self._log(">> ACTION: Switch to the Chrome window, type the 6-character CAPTCHA, and hit Enter <<")
-                except Exception as fill_err:
-                    _bring_window_to_foreground(self.driver)
-                    self._log(f"Auto-fill notice: {fill_err}. Please enter credentials manually in Chrome.")
-            else:
-                _bring_window_to_foreground(self.driver)
-                self._log(">> CHROME IS OPEN: Awaiting manual login in Chrome window (Username, Password & CAPTCHA)...")
+                answer = self._wait_for_captcha_answer()
+                if answer is None:
+                    if self.should_stop:
+                        self._log("Verification cancelled while waiting for CAPTCHA.")
+                        return
+                    raise TimeoutError("Timed out waiting for the CAPTCHA answer.")
 
-            # Polling loop for login
-            login_detected = False
-            poll_start = time.time()
-            max_wait_seconds = 300  # 5 minutes to log in
+                self._log("CAPTCHA answer received. Submitting login...")
+                with self._lock:
+                    self.status = "starting"
+                _submit_captcha_and_login(self.driver, answer)
 
-            while not login_detected and not self.should_stop:
-                if self.login_confirmed:
-                    self._log("Manual confirmation flag detected.")
-                    login_detected = True
+                # Poll for success instead of one fixed sleep+check - the portal's
+                # post-login redirect can take a variable amount of time, and
+                # checking too early misreads a still-redirecting page as a failure.
+                login_ok = False
+                poll_start = time.time()
+                while time.time() - poll_start < 8.0:
+                    if _is_login_successful(self.driver):
+                        login_ok = True
+                        break
+                    time.sleep(0.5)
+
+                if login_ok:
+                    self._log(f"Login successful! URL: {self.driver.current_url}")
+                    login_success = True
                     break
 
-                try:
-                    cur_url = self.driver.current_url.lower()
+                self._log(f"Login attempt {attempt} failed (incorrect CAPTCHA or portal error). "
+                          f"URL was: {self.driver.current_url}")
+                if attempt < MAX_CAPTCHA_ATTEMPTS:
+                    self._log("Reloading the login page for a fresh CAPTCHA...")
+                    self.driver.get(LOGIN_URL)
+                    _fill_credentials(self.driver, standard_wait, gst_username, gst_password)
 
-                    # While still on login page, user is NOT logged in yet
-                    if "services/login" not in cur_url and "accessdenied" not in cur_url:
-                        if "services/auth" in cur_url or "fowelcome" in cur_url:
-                            self._log(f"Login successfully detected on portal! URL: {self.driver.current_url}")
-                            login_detected = True
-                            break
-                        if len(self.driver.find_elements(By.XPATH, "//a[contains(translate(text(), 'LOGOUT', 'logout'), 'logout')] | //button[contains(translate(text(), 'LOGOUT', 'logout'), 'logout')] | //a[contains(text(), 'Dashboard')]")) > 0:
-                            self._log("Login successfully detected via authenticated navigation elements!")
-                            login_detected = True
-                            break
-                except Exception as e:
-                    if "no such window" in str(e).lower():
-                        raise RuntimeError("Browser window was closed by user.")
-
-                if time.time() - poll_start > max_wait_seconds:
-                    raise TimeoutError("Login timed out after 5 minutes.")
-
-                time.sleep(1.0)
-
-            if self.should_stop:
-                self._log("Verification aborted before navigation.")
-                return
+            if not login_success:
+                raise RuntimeError(f"Login failed after {MAX_CAPTCHA_ATTEMPTS} CAPTCHA attempts.")
 
             with self._lock:
+                self.captcha_image_b64 = None
                 self.status = "navigating"
 
             self._log("Handling post-login popups and navigating to Search Taxpayer...")
-            time.sleep(1.5)
+            time.sleep(2.5)  # let the post-login dashboard fully settle before clicking its menu
             _handle_aadhaar_popup(self.driver)
 
             nav_ok = _navigate_to_search_page(self.driver, standard_wait)
             if not nav_ok:
-                raise RuntimeError("Failed to navigate to Search Taxpayer page. Please ensure you are logged in.")
+                self._log("First navigation attempt failed, retrying once...")
+                time.sleep(2.0)
+                _handle_aadhaar_popup(self.driver)
+                nav_ok = _navigate_to_search_page(self.driver, standard_wait)
+            if not nav_ok:
+                raise RuntimeError(
+                    f"Failed to navigate to Search Taxpayer page after login. Current URL: {self.driver.current_url}"
+                )
 
             self._log("Search Taxpayer page is active and ready. Beginning extraction loop...")
             with self._lock:
@@ -844,7 +755,7 @@ class PortalVerificationService:
                         st_name = STATE_CODES.get(gstin[:2], "India")
 
                         # Permanently save to DB and CSV!
-                        saved_rec = client_db.save_party_mapping({
+                        client_db.save_party_mapping({
                             "gstin": gstin,
                             "trade_name": trade_name,
                             "legal_name": legal_name,
@@ -913,19 +824,10 @@ class PortalVerificationService:
                 except Exception:
                     pass
                 self.driver = None
-            if hasattr(self, "_chrome_pi") and self._chrome_pi:
-                try:
-                    import ctypes
-                    kernel32 = ctypes.windll.kernel32
-                    kernel32.TerminateProcess(self._chrome_pi.hProcess, 0)
-                    kernel32.CloseHandle(self._chrome_pi.hProcess)
-                    kernel32.CloseHandle(self._chrome_pi.hThread)
-                except Exception:
-                    pass
-                self._chrome_pi = None
             with self._lock:
                 self.is_running = False
                 self.current_gstin = ""
+                self.captcha_image_b64 = None
             self._log("Portal verification session ended.")
 
 

@@ -5,6 +5,7 @@ let allPartiesData = [];
 let allInvoicesData = [];
 let currentPage = 1;
 const pageSize = 50;
+let lastCaptchaImageB64 = null;
 
 const STATE_CODES = {
   "01": "Jammu & Kashmir", "02": "Himachal Pradesh", "03": "Punjab", "04": "Chandigarh",
@@ -193,7 +194,7 @@ function clearOverviewUI() {
   const kpiDocs = document.getElementById("kpiTotalDocs");
   if (kpiDocs) kpiDocs.textContent = "0";
   const kpiSplit = document.getElementById("kpiDocSplit");
-  if (kpiSplit) kpiSplit.textContent = "B2B: 0 | B2C: 0 | CDNR: 0";
+  if (kpiSplit) kpiSplit.textContent = "B2B: 0 | B2C: 0 | CDNR: 0 | EXP: 0 | ADV: 0";
   const kpiTaxable = document.getElementById("kpiTaxable");
   if (kpiTaxable) kpiTaxable.textContent = "₹0.00";
   const kpiTaxableCr = document.getElementById("kpiTaxableCr");
@@ -846,8 +847,8 @@ async function fetchOverviewData() {
 
     // Update KPIs
     document.getElementById("kpiTotalDocs").textContent = (totals.total_documents || 0).toLocaleString("en-IN");
-    document.getElementById("kpiDocSplit").textContent = 
-      `B2B: ${(totals.total_b2b || 0).toLocaleString()} | B2C: ${(totals.total_b2c || 0).toLocaleString()} | CDNR: ${(totals.total_cdnr || 0).toLocaleString()}`;
+    document.getElementById("kpiDocSplit").textContent =
+      `B2B: ${(totals.total_b2b || 0).toLocaleString()} | B2C: ${(totals.total_b2c || 0).toLocaleString()} | CDNR: ${(totals.total_cdnr || 0).toLocaleString()} | EXP: ${(totals.total_exp || 0).toLocaleString()} | ADV: ${(totals.total_advance || 0).toLocaleString()}`;
     
     document.getElementById("kpiTaxable").textContent = formatINR(totals.taxable_turnover);
     document.getElementById("kpiTaxableCr").textContent = formatCr(totals.taxable_turnover);
@@ -877,7 +878,7 @@ function renderMonthlyTable(months, totals) {
   const tfoot = document.getElementById("monthlyTableFoot");
 
   if (!months || months.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="12" class="text-center py-4 text-muted">No monthly return data found for active client. Use 'Upload GSTR-1' to import return files.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="14" class="text-center py-4 text-muted">No monthly return data found for active client. Use 'Upload GSTR-1' to import return files.</td></tr>`;
     tfoot.innerHTML = "";
     return;
   }
@@ -889,6 +890,8 @@ function renderMonthlyTable(months, totals) {
       <td class="text-center text-muted">${m.b2b_count.toLocaleString()}</td>
       <td class="text-center text-muted">${m.b2c_count.toLocaleString()}</td>
       <td class="text-center text-muted">${m.cdnr_count.toLocaleString()}</td>
+      <td class="text-center text-muted">${(m.exp_count || 0).toLocaleString()}</td>
+      <td class="text-center text-muted">${(m.advance_count || 0).toLocaleString()}</td>
       <td class="text-center badge-party">${m.parties_count}</td>
       <td class="text-end font-mono">${formatINR(m.taxable_val)}</td>
       <td class="text-end font-mono text-muted">${formatINR(m.cgst_val)}</td>
@@ -910,6 +913,8 @@ function renderMonthlyTable(months, totals) {
       <th class="text-center">${(totals.total_b2b || 0).toLocaleString()}</th>
       <th class="text-center">${(totals.total_b2c || 0).toLocaleString()}</th>
       <th class="text-center">${(totals.total_cdnr || 0).toLocaleString()}</th>
+      <th class="text-center">${(totals.total_exp || 0).toLocaleString()}</th>
+      <th class="text-center">${(totals.total_advance || 0).toLocaleString()}</th>
       <th class="text-center">${totals.unique_parties || 0}</th>
       <th class="text-end font-mono">${formatINR(totals.taxable_turnover)}</th>
       <th class="text-end font-mono">${formatINR(totals.total_cgst)}</th>
@@ -1058,12 +1063,13 @@ async function fetchInvoices(page = 1) {
   localStorage.setItem(STORAGE_INVOICES_PAGE, String(page));
   const search = document.getElementById("invSearchInput") ? document.getElementById("invSearchInput").value : "";
   const docType = document.getElementById("invTypeFilter") ? document.getElementById("invTypeFilter").value : "";
+  const valStatus = document.getElementById("invStatusFilter") ? document.getElementById("invStatusFilter").value : "";
 
   const tbody = document.getElementById("invoicesTableBody");
-  tbody.innerHTML = `<tr><td colspan="9" class="text-center py-4 text-muted"><div class="spinner-border spinner-border-sm me-2 text-teal" role="status"></div>Loading vouchers...</td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="10" class="text-center py-4 text-muted"><div class="spinner-border spinner-border-sm me-2 text-teal" role="status"></div>Loading vouchers...</td></tr>`;
 
   try {
-    const res = await fetch(`/api/invoices?page=${page}&limit=${pageSize}&search=${encodeURIComponent(search)}&doc_type=${encodeURIComponent(docType)}`);
+    const res = await fetch(`/api/invoices?page=${page}&limit=${pageSize}&search=${encodeURIComponent(search)}&doc_type=${encodeURIComponent(docType)}&validation_status=${encodeURIComponent(valStatus)}`);
     const data = await res.json();
     const items = data.items || data.invoices || [];
     const total = data.total !== undefined ? data.total : (data.total_records || 0);
@@ -1071,6 +1077,17 @@ async function fetchInvoices(page = 1) {
 
     allInvoicesData = items;
     document.getElementById("invCountBadge").textContent = `${total.toLocaleString()} Vouchers`;
+
+    const discBadge = document.getElementById("invDiscrepancyBadge");
+    if (discBadge) {
+      if (data.validation_summary && data.validation_summary.discrepant > 0) {
+        discBadge.classList.remove("d-none");
+        discBadge.textContent = `${data.validation_summary.discrepant} Mismatches (> ₹2)`;
+      } else {
+        discBadge.classList.add("d-none");
+      }
+    }
+
     renderInvoicesTable(items);
     renderPagination(total, data.page || page, limit);
 
@@ -1081,34 +1098,77 @@ async function fetchInvoices(page = 1) {
 
   } catch (err) {
     console.error("Failed to load invoices:", err);
-    tbody.innerHTML = `<tr><td colspan="9" class="text-center py-4 text-danger">Failed to load transactions: ${err.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="text-center py-4 text-danger">Failed to load transactions: ${err.message}</td></tr>`;
   }
+}
+
+function formatDisplayDate(dateVal) {
+  if (!dateVal || dateVal === "-") return "-";
+  const str = String(dateVal).trim();
+  // Format 1: YYYYMMDD (e.g. 20250501 -> 01/05/2025)
+  if (/^\d{8}$/.test(str)) {
+    const yyyy = str.substring(0, 4);
+    const mm = str.substring(4, 6);
+    const dd = str.substring(6, 8);
+    return `${dd}/${mm}/${yyyy}`;
+  }
+  // Format 2: YYYY-MM-DD or YYYY/MM/DD (e.g. 2025-05-01 -> 01/05/2025)
+  if (/^\d{4}[-/]\d{1,2}[-/]\d{1,2}$/.test(str)) {
+    const parts = str.split(/[-/]/);
+    const yyyy = parts[0];
+    const mm = parts[1].padStart(2, "0");
+    const dd = parts[2].padStart(2, "0");
+    return `${dd}/${mm}/${yyyy}`;
+  }
+  // Format 3: DD-MM-YYYY or DD/MM/YYYY (e.g. 1-5-2025 -> 01/05/2025)
+  if (/^\d{1,2}[-/]\d{1,2}[-/]\d{4}$/.test(str)) {
+    const parts = str.split(/[-/]/);
+    const dd = parts[0].padStart(2, "0");
+    const mm = parts[1].padStart(2, "0");
+    const yyyy = parts[2];
+    return `${dd}/${mm}/${yyyy}`;
+  }
+  return str;
 }
 
 function renderInvoicesTable(items) {
   const tbody = document.getElementById("invoicesTableBody");
   if (!items || items.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="9" class="text-center py-4 text-muted">No transactions found matching your criteria.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="text-center py-4 text-muted">No transactions found matching your criteria.</td></tr>`;
     return;
   }
 
   tbody.innerHTML = items.map(inv => {
-    let typeBadge = "bg-primary";
+    let typeBadge = "bg-primary"; // B2B / B2BA default
     const dtype = (inv.doc_type || "").toUpperCase();
-    if (dtype === "B2CS") typeBadge = "bg-info";
-    else if (dtype.includes("CREDIT") || dtype.includes("CDNR")) typeBadge = "bg-danger";
+    if (dtype.includes("CREDIT")) typeBadge = "bg-danger";
+    else if (dtype.includes("DEBIT")) typeBadge = "bg-success";
+    else if (dtype.startsWith("ADVANCE")) typeBadge = "bg-dark";
+    else if (dtype.startsWith("EXP")) typeBadge = "bg-warning text-dark";
+    else if (dtype.startsWith("B2CL")) typeBadge = "bg-secondary";
+    else if (dtype.startsWith("B2CS")) typeBadge = "bg-info";
 
     const docNum = inv.doc_num || inv.doc_number || "-";
     const partyName = inv.party_ledger || inv.ledger_name || inv.party_name || "Party";
-    const partyGstin = inv.party_gstin || "B2C Retail";
+    const partyGstin = inv.party_gstin || "Unregistered";
     const rate = inv.tax_rate !== undefined ? inv.tax_rate : 18;
     const tax = inv.total_tax !== undefined ? inv.total_tax : ((inv.cgst || 0) + (inv.sgst || 0) + (inv.igst || 0));
+
+    let statusBadge = "";
+    if (inv.validation_status === "balanced") {
+      statusBadge = '<span class="badge bg-success-subtle text-success border border-success-subtle px-2 py-1"><i class="fa-solid fa-check me-1"></i>Balanced</span>';
+    } else if (inv.validation_status === "rounded") {
+      const roSign = (inv.diff || 0) > 0 ? `+₹${Math.abs(inv.diff).toFixed(2)}` : `-₹${Math.abs(inv.diff).toFixed(2)}`;
+      statusBadge = `<span class="badge bg-info-subtle text-info border border-info-subtle px-2 py-1" title="Round Off: ${roSign} (Auto-balanced to Round Off A/c)"><i class="fa-solid fa-scale-balanced me-1"></i>Round Off (${roSign})</span>`;
+    } else {
+      statusBadge = `<span class="badge bg-danger-subtle text-danger border border-danger-subtle px-2 py-1" title="Discrepancy: ₹${Math.abs(inv.diff || 0).toFixed(2)} (Excluded from Tally export)"><i class="fa-solid fa-triangle-exclamation me-1"></i>Mismatch (₹${Math.abs(inv.diff || 0).toFixed(2)})</span>`;
+    }
 
     return `
       <tr>
         <td><span class="badge ${typeBadge}">${inv.doc_type}</span></td>
         <td><strong class="font-mono text-dark">${docNum}</strong></td>
-        <td class="font-mono text-muted small">${inv.doc_date || "-"}</td>
+        <td class="font-mono text-muted small">${formatDisplayDate(inv.doc_date)}</td>
         <td>
           <div class="fw-semibold text-truncate" style="max-width: 280px;" title="${partyName}">
             ${partyName}
@@ -1119,6 +1179,7 @@ function renderInvoicesTable(items) {
         <td class="text-end font-mono">${formatINR(inv.taxable_val)}</td>
         <td class="text-end font-mono text-muted">${formatINR(tax)}</td>
         <td class="text-end font-mono fw-bold text-dark">${formatINR(inv.total_val)}</td>
+        <td class="text-center font-mono small">${statusBadge}</td>
       </tr>
     `;
   }).join("");
@@ -1248,8 +1309,14 @@ async function triggerXmlGeneration() {
         `${(data.masters_size / 1024).toFixed(1)} KB • ${data.master_ledgers_count} Master Ledgers`;
       
       document.getElementById("entriesFileName").textContent = data.entries_file;
-      document.getElementById("entriesFileSize").textContent = 
-        `${(data.entries_size / 1024).toFixed(1)} KB • ${data.vouchers_count.toLocaleString()} Vouchers`;
+      let entriesMeta = `${(data.entries_size / 1024).toFixed(1)} KB • ${data.vouchers_count.toLocaleString()} Vouchers`;
+      if (data.rounded_count > 0) {
+        entriesMeta += ` (${data.rounded_count} auto-balanced with Round Off)`;
+      }
+      if (data.excluded_discrepant_count > 0) {
+        entriesMeta += ` • ${data.excluded_discrepant_count} excluded (> ₹2 discrepancy)`;
+      }
+      document.getElementById("entriesFileSize").textContent = entriesMeta;
 
       showToast("Consolidated XML generated successfully!");
     } else {
@@ -1342,6 +1409,25 @@ async function importToTally(target) {
 // ---------------------------------------------------------------------------
 // 9. File Upload Handler (Client Aware)
 // ---------------------------------------------------------------------------
+function openUploadModal() {
+  if (!activeClient) {
+    alert("Please select an active taxpayer client before uploading GSTR-1 returns.");
+    switchToTab("clients-tab");
+    return;
+  }
+  const fileInput = document.getElementById("gstr1FileInput");
+  if (fileInput) fileInput.value = "";
+  const clearCheckbox = document.getElementById("uploadClearExistingCheckbox");
+  if (clearCheckbox) clearCheckbox.checked = false;
+  const progress = document.getElementById("uploadProgress");
+  if (progress) progress.classList.add("d-none");
+
+  const modalEl = document.getElementById("uploadModal");
+  if (!modalEl) return;
+  const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+  modal.show();
+}
+
 async function uploadGstrFiles() {
   if (!activeClient) {
     alert("Please select an active taxpayer client before uploading GSTR-1 returns.");
@@ -1481,8 +1567,11 @@ async function resetPortalModalToSetup() {
   }
   const completeBanner = document.getElementById("portalCompleteBanner");
   if (completeBanner) completeBanner.classList.add("d-none");
-  const manualBanner = document.getElementById("portalManualLoginBanner");
-  if (manualBanner) manualBanner.classList.add("d-none");
+  const captchaSection = document.getElementById("portalCaptchaSection");
+  if (captchaSection) captchaSection.classList.add("d-none");
+  const captchaInput = document.getElementById("portalCaptchaInput");
+  if (captchaInput) { captchaInput.value = ""; captchaInput.disabled = false; }
+  lastCaptchaImageB64 = null;
   const terminal = document.getElementById("portalLogTerminal");
   if (terminal) terminal.innerHTML = "<div>Session reset. Waiting to launch...</div>";
   const resBody = document.getElementById("portalResultsBody");
@@ -1704,15 +1793,18 @@ function updatePortalUIFromState(state) {
   const pLabel = document.getElementById("portalProgressLabel");
   const pCounter = document.getElementById("portalProgressCounter");
   const terminal = document.getElementById("portalLogTerminal");
-  const manualBanner = document.getElementById("portalManualLoginBanner");
+  const captchaSection = document.getElementById("portalCaptchaSection");
+  const captchaImg = document.getElementById("portalCaptchaImage");
+  const captchaInput = document.getElementById("portalCaptchaInput");
+  const captchaSubmitBtn = document.getElementById("portalCaptchaSubmitBtn");
   const completeBanner = document.getElementById("portalCompleteBanner");
   const cancelBtn = document.getElementById("portalCancelBtn");
   const startBtn = document.getElementById("portalStartBtn");
 
   const statusLabels = {
     "idle": "Idle - Ready to start",
-    "starting": "Launching Chrome...",
-    "waiting_login": "Waiting for Login in Chrome...",
+    "starting": "Launching headless Chrome & logging in...",
+    "waiting_captcha": "Enter the CAPTCHA shown below",
     "navigating": "Navigating to Search Taxpayer...",
     "verifying": `Extracting: ${state.current_gstin || 'Taxpayers'}...`,
     "completed": "Verification Complete! Names Saved Permanently.",
@@ -1723,7 +1815,7 @@ function updatePortalUIFromState(state) {
   const statusColors = {
     "idle": "bg-secondary",
     "starting": "bg-info text-dark",
-    "waiting_login": "bg-warning text-dark",
+    "waiting_captcha": "bg-warning text-dark",
     "navigating": "bg-primary",
     "verifying": "bg-teal text-white",
     "completed": "bg-success text-white",
@@ -1753,11 +1845,21 @@ function updatePortalUIFromState(state) {
     }
   }
 
-  if (manualBanner) {
-    if (state.status === "waiting_login") {
-      manualBanner.classList.remove("d-none");
+  if (captchaSection) {
+    if (state.status === "waiting_captcha" && state.captcha_image_b64) {
+      captchaSection.classList.remove("d-none");
+      // Only touch the <img> src when the image actually changed, so a
+      // wrong-answer retry swaps to the fresh CAPTCHA without flicker
+      // on every 1s poll tick in between.
+      if (captchaImg && state.captcha_image_b64 !== lastCaptchaImageB64) {
+        captchaImg.src = `data:image/png;base64,${state.captcha_image_b64}`;
+        lastCaptchaImageB64 = state.captcha_image_b64;
+        if (captchaInput) { captchaInput.value = ""; captchaInput.disabled = false; captchaInput.focus(); }
+        if (captchaSubmitBtn) captchaSubmitBtn.disabled = false;
+      }
     } else {
-      manualBanner.classList.add("d-none");
+      captchaSection.classList.add("d-none");
+      lastCaptchaImageB64 = null;
     }
   }
 
@@ -1810,12 +1912,34 @@ function renderPortalResults(results) {
   `).join("");
 }
 
-async function confirmPortalLogin() {
+async function submitPortalCaptcha() {
+  const input = document.getElementById("portalCaptchaInput");
+  const btn = document.getElementById("portalCaptchaSubmitBtn");
+  const answer = input ? input.value.trim() : "";
+  if (!answer) {
+    if (input) input.focus();
+    return;
+  }
+  if (input) input.disabled = true;
+  if (btn) btn.disabled = true;
   try {
-    await fetch("/api/gstin/verify-portal/confirm-login", { method: "POST" });
-    showToast("Login confirmed! Navigating to Search Taxpayer...");
+    await fetch("/api/gstin/verify-portal/submit-captcha", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ answer })
+    });
+    showToast("CAPTCHA submitted. Logging in...");
   } catch (err) {
-    console.error("Error confirming login:", err);
+    console.error("Error submitting CAPTCHA:", err);
+    if (input) input.disabled = false;
+    if (btn) btn.disabled = false;
+  }
+}
+
+function onCaptchaInputKeydown(event) {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    submitPortalCaptcha();
   }
 }
 

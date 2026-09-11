@@ -147,8 +147,10 @@ def _row_to_doc(row: Dict[str, Any]) -> NormalizedDocument:
 def _month_stat(label: str, docs: List[NormalizedDocument], filename: str = "") -> Dict[str, Any]:
     """Builds one row of the monthly summary table from a list of already-extracted documents."""
     b2b_c = sum(1 for d in docs if d.doc_type in ("B2B", "B2BA"))
-    b2c_c = sum(1 for d in docs if d.doc_type == "B2CS")
+    b2c_c = sum(1 for d in docs if d.doc_type in ("B2CS", "B2CSA", "B2CL", "B2CLA"))
     cdnr_c = sum(1 for d in docs if "CREDIT" in d.doc_type or "DEBIT" in d.doc_type)
+    exp_c = sum(1 for d in docs if d.doc_type.startswith("EXP"))
+    advance_c = sum(1 for d in docs if d.doc_type.startswith("ADVANCE"))
     taxable = sum(d.taxable_val for d in docs)
     inv_val = sum(d.total_val for d in docs)
     cgst = sum(t.amount for d in docs for t in d.tax_lines if t.tax_type == "CGST")
@@ -162,6 +164,8 @@ def _month_stat(label: str, docs: List[NormalizedDocument], filename: str = "") 
         "b2b_count": b2b_c,
         "b2c_count": b2c_c,
         "cdnr_count": cdnr_c,
+        "exp_count": exp_c,
+        "advance_count": advance_c,
         "parties_count": len(parties),
         "taxable_val": round(taxable, 2),
         "cgst_val": round(cgst, 2),
@@ -281,6 +285,8 @@ def reload_dataset(client_id: Optional[int] = None) -> Dict[str, Any]:
         "total_b2b": sum(m["b2b_count"] for m in month_stats),
         "total_b2c": sum(m["b2c_count"] for m in month_stats),
         "total_cdnr": sum(m["cdnr_count"] for m in month_stats),
+        "total_exp": sum(m["exp_count"] for m in month_stats),
+        "total_advance": sum(m["advance_count"] for m in month_stats),
         "unique_parties": len(all_parties),
         "taxable_turnover": round(tot_taxable, 2),
         "total_cgst": round(tot_cgst, 2),
@@ -730,7 +736,9 @@ def start_portal_verification(req: Optional[PortalVerifyStartRequest] = None):
         gst_password=final_password
     )
     if not started:
-        raise HTTPException(status_code=409, detail="A verification session is already in progress.")
+        state = portal_verifier.verifier_service.get_state()
+        detail = state.get("error") or "A verification session is already in progress."
+        raise HTTPException(status_code=409, detail=detail)
 
     return {
         "status": "started",
@@ -745,12 +753,19 @@ def get_portal_verification_status():
     import portal_verifier
     return portal_verifier.verifier_service.get_state()
 
-@app.post("/api/gstin/verify-portal/confirm-login")
-def confirm_portal_login():
-    """Signals that the user has manually logged into the GST portal in Chrome."""
+class CaptchaSubmitRequest(BaseModel):
+    answer: str
+
+@app.post("/api/gstin/verify-portal/submit-captcha")
+def submit_portal_captcha(req: CaptchaSubmitRequest):
+    """Relays the CAPTCHA answer the user typed on our own page into the headless
+    browser's login form."""
     import portal_verifier
-    portal_verifier.verifier_service.confirm_login()
-    return {"status": "success", "message": "Manual login confirmation received."}
+    answer = (req.answer or "").strip()
+    if not answer:
+        raise HTTPException(status_code=400, detail="CAPTCHA answer is required.")
+    portal_verifier.verifier_service.submit_captcha(answer)
+    return {"status": "success"}
 
 @app.post("/api/gstin/verify-portal/cancel")
 def cancel_portal_verification():
@@ -828,6 +843,7 @@ def get_invoices(
     month: Optional[str] = None,
     doc_type: Optional[str] = None,
     search: Optional[str] = None,
+    validation_status: Optional[str] = None,
     page: int = 1,
     limit: Optional[int] = None,
     page_size: Optional[int] = None
@@ -852,7 +868,8 @@ def get_invoices(
             "limit": ps,
             "total_pages": 0,
             "items": [],
-            "invoices": []
+            "invoices": [],
+            "validation_summary": {"total": 0, "balanced": 0, "rounded": 0, "discrepant": 0}
         }
 
     if not store.is_loaded:
@@ -868,12 +885,27 @@ def get_invoices(
         dt_upper = doc_type.upper().strip()
         if dt_upper in ("B2B", "B2BA"):
             filtered = [d for d in filtered if d.doc_type in ("B2B", "B2BA")]
-        elif dt_upper in ("CDNR", "CREDIT", "CDNRA"):
-            filtered = [d for d in filtered if "CREDIT" in d.doc_type or "CDNR" in d.doc_type or "DEBIT" in d.doc_type]
-        elif dt_upper == "B2CS":
-            filtered = [d for d in filtered if d.doc_type == "B2CS"]
+        elif dt_upper in ("CDNR", "CREDIT", "CDNRA", "CDNUR", "CDNURA"):
+            filtered = [d for d in filtered if "CREDIT" in d.doc_type or "DEBIT" in d.doc_type]
+        elif dt_upper in ("B2CS", "B2CSA"):
+            filtered = [d for d in filtered if d.doc_type in ("B2CS", "B2CSA")]
+        elif dt_upper in ("B2CL", "B2CLA"):
+            filtered = [d for d in filtered if d.doc_type in ("B2CL", "B2CLA")]
+        elif dt_upper == "EXP":
+            filtered = [d for d in filtered if d.doc_type.startswith("EXP")]
+        elif dt_upper == "ADVANCE":
+            filtered = [d for d in filtered if d.doc_type.startswith("ADVANCE")]
         else:
             filtered = [d for d in filtered if dt_upper in d.doc_type]
+
+    if validation_status:
+        vs = validation_status.lower().strip()
+        if vs == "balanced":
+            filtered = [d for d in filtered if abs(round(d.total_val - (d.taxable_val + sum(t.amount for t in d.tax_lines)), 2)) < 0.01]
+        elif vs == "rounded":
+            filtered = [d for d in filtered if 0.01 <= abs(round(d.total_val - (d.taxable_val + sum(t.amount for t in d.tax_lines)), 2)) <= 2.0]
+        elif vs == "discrepant":
+            filtered = [d for d in filtered if abs(round(d.total_val - (d.taxable_val + sum(t.amount for t in d.tax_lines)), 2)) > 2.0]
 
     if search:
         s = search.lower().strip()
@@ -898,12 +930,36 @@ def get_invoices(
         
         formatted_name = format_party_ledger(d.party_name, d.party_gstin, pref)
 
+        # Format date as DD/MM/YYYY for UI display (e.g. 20250501 -> 01/05/2025)
+        raw_dt = str(d.doc_date or "").strip()
+        if len(raw_dt) == 8 and raw_dt.isdigit():
+            display_dt = f"{raw_dt[6:8]}/{raw_dt[4:6]}/{raw_dt[0:4]}"
+        elif len(raw_dt) == 10 and "-" in raw_dt:
+            dp = raw_dt.split("-")
+            display_dt = f"{dp[2].zfill(2)}/{dp[1].zfill(2)}/{dp[0]}" if len(dp) == 3 and len(dp[0]) == 4 else raw_dt
+        else:
+            display_dt = raw_dt or "-"
+
+        # Double-entry balance calculation
+        diff = round(d.total_val - (d.taxable_val + tot_tax), 2)
+        abs_diff = abs(diff)
+        if abs_diff < 0.01:
+            val_status = "balanced"
+            val_label = "Balanced"
+        elif abs_diff <= 2.0:
+            val_status = "rounded"
+            val_label = f"Round Off ({diff:+.2f})"
+        else:
+            val_status = "discrepant"
+            val_label = f"Mismatch ({diff:+.2f})"
+
         inv_list.append({
             "doc_num": d.doc_number,
             "doc_number": d.doc_number,
-            "doc_date": d.doc_date,
+            "doc_date": display_dt,
+            "raw_date": d.doc_date,
             "doc_type": d.doc_type,
-            "party_gstin": d.party_gstin or "B2C Retail",
+            "party_gstin": d.party_gstin or "Unregistered",
             "party_name": d.party_name,
             "party_ledger": formatted_name,
             "ledger_name": formatted_name,
@@ -913,8 +969,18 @@ def get_invoices(
             "sgst": round(sgst, 2),
             "igst": round(igst, 2),
             "total_tax": round(tot_tax, 2),
-            "total_val": round(d.total_val, 2)
+            "total_val": round(d.total_val, 2),
+            "diff": diff,
+            "round_off": round(-diff, 2) if val_status == "rounded" else 0.0,
+            "validation_status": val_status,
+            "validation_label": val_label
         })
+
+    # Summary across all loaded documents
+    all_docs = store.documents
+    balanced_cnt = sum(1 for d in all_docs if abs(round(d.total_val - (d.taxable_val + sum(t.amount for t in d.tax_lines)), 2)) < 0.01)
+    rounded_cnt = sum(1 for d in all_docs if 0.01 <= abs(round(d.total_val - (d.taxable_val + sum(t.amount for t in d.tax_lines)), 2)) <= 2.0)
+    discrepant_cnt = sum(1 for d in all_docs if abs(round(d.total_val - (d.taxable_val + sum(t.amount for t in d.tax_lines)), 2)) > 2.0)
 
     return {
         "total": total_count,
@@ -924,7 +990,13 @@ def get_invoices(
         "limit": ps,
         "total_pages": (total_count + ps - 1) // ps,
         "items": inv_list,
-        "invoices": inv_list
+        "invoices": inv_list,
+        "validation_summary": {
+            "total": len(all_docs),
+            "balanced": balanced_cnt,
+            "rounded": rounded_cnt,
+            "discrepant": discrepant_cnt
+        }
     }
 
 @app.post("/api/generate-xml")
@@ -955,6 +1027,11 @@ def generate_xml(preference: Optional[str] = None):
     m_count = masters_xml.count('<LEDGER ACTION="Create"')
     v_count = entries_xml.count('<VOUCHER ACTION="Create"')
 
+    all_docs = store.documents
+    discrepant_cnt = sum(1 for d in all_docs if abs(round(d.total_val - (d.taxable_val + sum(t.amount for t in d.tax_lines)), 2)) > 2.0)
+    rounded_cnt = sum(1 for d in all_docs if 0.01 <= abs(round(d.total_val - (d.taxable_val + sum(t.amount for t in d.tax_lines)), 2)) <= 2.0)
+    balanced_cnt = sum(1 for d in all_docs if abs(round(d.total_val - (d.taxable_val + sum(t.amount for t in d.tax_lines)), 2)) < 0.01)
+
     return {
         "status": "success",
         "name_preference": store.name_preference,
@@ -963,7 +1040,10 @@ def generate_xml(preference: Optional[str] = None):
         "master_ledgers_count": m_count,
         "entries_file": entries_path.name,
         "entries_size": entries_path.stat().st_size,
-        "vouchers_count": v_count
+        "vouchers_count": v_count,
+        "balanced_count": balanced_cnt,
+        "rounded_count": rounded_cnt,
+        "excluded_discrepant_count": discrepant_cnt
     }
 
 class ImportRequest(BaseModel):
