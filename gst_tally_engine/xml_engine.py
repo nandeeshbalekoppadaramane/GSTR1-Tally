@@ -27,6 +27,17 @@ class TallyXMLEngine:
         created_parties = set()
         created_taxes = set()
 
+        # Voucher Types alteration to ensure Tally preserves doc_number from JSON instead of auto-incrementing
+        vch_types = ["Sales", "Credit Note", "Debit Note", "Journal"] if is_sales else ["Purchase", "Debit Note", "Credit Note", "Journal"]
+        for vt_name in vch_types:
+            msg = ET.SubElement(req_data, "TALLYMESSAGE", {"xmlns:UDF": "TallyUDF"})
+            vt = ET.SubElement(msg, "VOUCHERTYPE", {"ACTION": "Alter", "NAME": vt_name})
+            ET.SubElement(vt, "NAME").text = vt_name
+            ET.SubElement(vt, "NUMBERINGMETHOD").text = "Manual"
+            series_list = ET.SubElement(vt, "VOUCHERNUMBERSERIES.LIST")
+            ET.SubElement(series_list, "NAME").text = "Default"
+            ET.SubElement(series_list, "NUMBERINGMETHOD").text = "Manual"
+
         # Base Accounts required by vouchers
         base_accounts = [
             ("Sales A/c", "Sales Accounts") if is_sales else ("Purchase A/c", "Purchase Accounts"),
@@ -116,6 +127,19 @@ class TallyXMLEngine:
 
         is_sales = (gstr_type.upper() == "GSTR1")
 
+        # Configure Voucher Types to Manual numbering before importing vouchers,
+        # ensuring that even if transactions are imported standalone, Tally preserves
+        # the exact invoice number (doc_number) and never overrides it with auto-increment.
+        vch_types = ["Sales", "Credit Note", "Debit Note", "Journal"] if is_sales else ["Purchase", "Debit Note", "Credit Note", "Journal"]
+        for vt_name in vch_types:
+            msg = ET.SubElement(req_data, "TALLYMESSAGE", {"xmlns:UDF": "TallyUDF"})
+            vt = ET.SubElement(msg, "VOUCHERTYPE", {"ACTION": "Alter", "NAME": vt_name})
+            ET.SubElement(vt, "NAME").text = vt_name
+            ET.SubElement(vt, "NUMBERINGMETHOD").text = "Manual"
+            series_list = ET.SubElement(vt, "VOUCHERNUMBERSERIES.LIST")
+            ET.SubElement(series_list, "NAME").text = "Default"
+            ET.SubElement(series_list, "NUMBERINGMETHOD").text = "Manual"
+
         for doc in documents:
             if doc.doc_type.startswith("ADVANCE"):
                 msg = ET.SubElement(req_data, "TALLYMESSAGE", {"xmlns:UDF": "TallyUDF"})
@@ -140,6 +164,7 @@ class TallyXMLEngine:
             ET.SubElement(vch, "DATE").text = doc.doc_date
             ET.SubElement(vch, "VOUCHERTYPENAME").text = vch_type
             ET.SubElement(vch, "VOUCHERNUMBER").text = doc.doc_number
+            ET.SubElement(vch, "REFERENCE").text = doc.doc_number
             ET.SubElement(vch, "PARTYLEDGERNAME").text = party_ledger
 
             # Build Narration String
@@ -154,6 +179,11 @@ class TallyXMLEngine:
             ET.SubElement(p_entry, "LEDGERNAME").text = party_ledger
             ET.SubElement(p_entry, "ISDEEMEDPOSITIVE").text = "Yes" if party_is_dr else "No"
             ET.SubElement(p_entry, "AMOUNT").text = f"{p_amount:.2f}"
+            if doc.party_gstin:
+                ba = ET.SubElement(p_entry, "BILLALLOCATIONS.LIST")
+                ET.SubElement(ba, "NAME").text = doc.doc_number
+                ET.SubElement(ba, "BILLTYPE").text = "New Ref"
+                ET.SubElement(ba, "AMOUNT").text = f"{p_amount:.2f}"
 
             # 2. Revenue / Expense Line
             b_amount = -doc.taxable_val if base_is_dr else doc.taxable_val
@@ -226,6 +256,7 @@ class TallyXMLEngine:
         ET.SubElement(vch, "DATE").text = doc.doc_date
         ET.SubElement(vch, "VOUCHERTYPENAME").text = "Journal"
         ET.SubElement(vch, "VOUCHERNUMBER").text = doc.doc_number
+        ET.SubElement(vch, "REFERENCE").text = doc.doc_number
 
         narration = f"Auto-imported [{gstr_type}] {doc.doc_type} - GST on advance receipt"
         if is_adjustment:

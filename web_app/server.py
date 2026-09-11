@@ -1013,8 +1013,7 @@ def generate_xml(preference: Optional[str] = None):
     if not active_id:
         raise HTTPException(status_code=400, detail="No active client selected. Please select a client first.")
 
-    if not store.is_loaded:
-        reload_dataset(active_id)
+    reload_dataset(active_id)
 
     if not store.documents:
         raise HTTPException(status_code=400, detail="No documents found for this client to export.")
@@ -1023,8 +1022,12 @@ def generate_xml(preference: Optional[str] = None):
     set_name_preference(pref)
     store.name_preference = pref
 
-    masters_xml = TallyXMLEngine.generate_masters_xml(store.documents, "GSTR1")
-    entries_xml = TallyXMLEngine.generate_entries_xml(store.documents, "GSTR1")
+    import importlib
+    import xml_engine
+    importlib.reload(xml_engine)
+
+    masters_xml = xml_engine.TallyXMLEngine.generate_masters_xml(store.documents, "GSTR1")
+    entries_xml = xml_engine.TallyXMLEngine.generate_entries_xml(store.documents, "GSTR1")
 
     masters_path = OUTPUT_DIR / "Consolidated_Masters.xml"
     entries_path = OUTPUT_DIR / "Consolidated_Entries.xml"
