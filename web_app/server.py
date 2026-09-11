@@ -17,16 +17,19 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# Add project roots to sys.path
-ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-GST_ENGINE = ROOT / "gst_tally_engine"
-if str(GST_ENGINE) not in sys.path:
-    sys.path.insert(0, str(GST_ENGINE))
-WEB_APP_DIR = ROOT / "web_app"
-if str(WEB_APP_DIR) not in sys.path:
-    sys.path.insert(0, str(WEB_APP_DIR))
+# Add project roots to sys.path - only meaningful running from source; a PyInstaller
+# build already has every module analyzed and bundled, and there is no on-disk
+# gst_tally_engine/web_app tree next to the frozen exe to point at.
+SRC_ROOT = Path(__file__).resolve().parent.parent
+if not getattr(sys, "frozen", False):
+    if str(SRC_ROOT) not in sys.path:
+        sys.path.insert(0, str(SRC_ROOT))
+    GST_ENGINE = SRC_ROOT / "gst_tally_engine"
+    if str(GST_ENGINE) not in sys.path:
+        sys.path.insert(0, str(GST_ENGINE))
+    WEB_APP_DIR = SRC_ROOT / "web_app"
+    if str(WEB_APP_DIR) not in sys.path:
+        sys.path.insert(0, str(WEB_APP_DIR))
 
 import client_db
 import domain
@@ -41,10 +44,14 @@ from constants import (
     get_state_name,
     format_party_ledger
 )
+from app_paths import get_data_root
 
-INPUT_DIR = ROOT / "input_json"
-OUTPUT_DIR = ROOT / "output_xml"
-CSV_PATH = ROOT / "party_mappings.csv"
+# Writable data lives next to the .exe in a frozen build, so it survives restarts
+# instead of being written into PyInstaller's temp extraction folder.
+DATA_ROOT = get_data_root()
+INPUT_DIR = DATA_ROOT / "input_json"
+OUTPUT_DIR = DATA_ROOT / "output_xml"
+CSV_PATH = DATA_ROOT / "party_mappings.csv"
 
 INPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
