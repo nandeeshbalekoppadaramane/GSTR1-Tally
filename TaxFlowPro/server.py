@@ -13,7 +13,7 @@ from typing import List, Optional, Dict, Any
 
 from fastapi import FastAPI, Request, UploadFile, File, Form, Query, HTTPException
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -89,13 +89,23 @@ def get_month_sort_key(name: str) -> int:
             return idx
     return 99
 
-# Global in-memory cache
+# Global in-memory cache. GSTR-1 (sales) and GSTR-2B (purchases) are two independent
+# datasets for the same client - same GSTIN, opposite sides of the ledger, different
+# document types - so each return type gets its own slot rather than sharing one list.
+class ReturnStore:
+    def __init__(self):
+        self.documents: List[NormalizedDocument] = []
+        self.monthly_stats: List[Dict[str, Any]] = []
+        self.financial_totals: Dict[str, Any] = {}
+        self.is_loaded: bool = False
+
 class DataStore:
-    documents: List[NormalizedDocument] = []
-    monthly_stats: List[Dict[str, Any]] = []
-    financial_totals: Dict[str, Any] = {}
-    is_loaded: bool = False
-    name_preference: str = "trade"
+    def __init__(self):
+        self._stores = {"GSTR1": ReturnStore(), "GSTR2B": ReturnStore()}
+        self.name_preference: str = "trade"
+
+    def get(self, return_type: Optional[str]) -> ReturnStore:
+        return self._stores.get((return_type or "GSTR1").upper(), self._stores["GSTR1"])
 
 store = DataStore()
 
@@ -129,31 +139,35 @@ def _row_to_doc(row: Dict[str, Any]) -> NormalizedDocument:
         taxable_val=row["taxable_val"],
         tax_lines=[TaxLine(**tl) for tl in (row.get("tax_lines") or [])],
         original_doc_num=row.get("original_doc_num"),
-        original_doc_date=row.get("original_doc_date")
+        original_doc_date=row.get("original_doc_date"),
+        period_label=row.get("period_label")
     )
 
-def _month_stat(label: str, docs: List[NormalizedDocument], filename: str = "") -> Dict[str, Any]:
-    """Builds one row of the monthly summary table from a list of already-extracted documents."""
-    b2b_c = sum(1 for d in docs if d.doc_type in ("B2B", "B2BA"))
-    b2c_c = sum(1 for d in docs if d.doc_type in ("B2CS", "B2CSA", "B2CL", "B2CLA"))
-    cdnr_c = sum(1 for d in docs if "CREDIT" in d.doc_type or "DEBIT" in d.doc_type)
-    exp_c = sum(1 for d in docs if d.doc_type.startswith("EXP"))
-    advance_c = sum(1 for d in docs if d.doc_type.startswith("ADVANCE"))
+def _doc_discrepancy(d: NormalizedDocument) -> float:
+    """abs(total_val - (taxable_val + tax)) for a real invoice/note; always 0 for a
+    journal-only document, which isn't held to that formula."""
+    if domain.is_journal_doc(d):
+        return 0.0
+    return round(abs(d.total_val - (d.taxable_val + sum(t.amount for t in d.tax_lines))), 2)
+
+def _month_stat(label: str, docs: List[NormalizedDocument], return_type: str = "GSTR1", filename: str = "") -> Dict[str, Any]:
+    """Builds one row of the monthly summary table from a list of already-extracted documents.
+    Sales (GSTR1) and purchases (GSTR2B) get different document-type breakdown columns -
+    B2C/Exports/Advances only exist on the sales side; RCM/Ineligible-ITC only on purchases."""
+    is_sales = (return_type or "GSTR1").upper() == "GSTR1"
     taxable = sum(d.taxable_val for d in docs)
     inv_val = sum(d.total_val for d in docs)
     cgst = sum(t.amount for d in docs for t in d.tax_lines if t.tax_type == "CGST")
     sgst = sum(t.amount for d in docs for t in d.tax_lines if t.tax_type == "SGST")
     igst = sum(t.amount for d in docs for t in d.tax_lines if t.tax_type == "IGST")
     parties = {d.party_gstin for d in docs if d.party_gstin}
-    return {
+
+    stat = {
         "label": label,
         "filename": filename,
         "total_docs": len(docs),
-        "b2b_count": b2b_c,
-        "b2c_count": b2c_c,
-        "cdnr_count": cdnr_c,
-        "exp_count": exp_c,
-        "advance_count": advance_c,
+        "b2b_count": sum(1 for d in docs if d.doc_type in ("B2B", "B2BA")),
+        "cdnr_count": sum(1 for d in docs if "CREDIT" in d.doc_type or "DEBIT" in d.doc_type),
         "parties_count": len(parties),
         "taxable_val": round(taxable, 2),
         "cgst_val": round(cgst, 2),
@@ -161,33 +175,51 @@ def _month_stat(label: str, docs: List[NormalizedDocument], filename: str = "") 
         "igst_val": round(igst, 2),
         "total_val": round(inv_val, 2)
     }
+    if is_sales:
+        stat["b2c_count"] = sum(1 for d in docs if d.doc_type in ("B2CS", "B2CSA", "B2CL", "B2CLA"))
+        stat["exp_count"] = sum(1 for d in docs if d.doc_type.startswith("EXP"))
+        stat["advance_count"] = sum(1 for d in docs if d.doc_type.startswith("ADVANCE"))
+    else:
+        stat["rcm_count"] = sum(1 for d in docs if d.doc_type in ("B2B_RCM", "B2BA_RCM", "RCM_SELF_INVOICE"))
+        stat["ineligible_count"] = sum(1 for d in docs if d.doc_type in ("B2B_INELIGIBLE", "B2BA_INELIGIBLE"))
+    return stat
 
-def _empty_totals() -> Dict[str, Any]:
-    return {
-        "total_documents": 0, "total_b2b": 0, "total_b2c": 0, "total_cdnr": 0,
+def _empty_totals(return_type: str = "GSTR1") -> Dict[str, Any]:
+    is_sales = (return_type or "GSTR1").upper() == "GSTR1"
+    totals = {
+        "total_documents": 0, "total_b2b": 0, "total_cdnr": 0,
         "unique_parties": 0, "taxable_turnover": 0.0, "total_cgst": 0.0,
         "total_sgst": 0.0, "total_igst": 0.0, "total_tax": 0.0,
         "gross_invoiced_value": 0.0, "months_count": 0
     }
+    if is_sales:
+        totals.update({"total_b2c": 0, "total_exp": 0, "total_advance": 0})
+    else:
+        totals.update({"total_rcm": 0, "total_ineligible": 0})
+    return totals
 
-def reload_dataset(client_id: Optional[int] = None) -> Dict[str, Any]:
-    """Rebuilds the in-memory store for the active client strictly from persisted DB records.
-    Raw uploaded JSON is never read from or written to disk - it's parsed once at upload
-    time and only the extracted documents are stored."""
+def reload_dataset(client_id: Optional[int] = None, return_type: str = "GSTR1") -> Dict[str, Any]:
+    """Rebuilds the in-memory store for one return type (GSTR1=sales, GSTR2B=purchases)
+    of the active client, strictly from persisted DB records. Raw uploaded JSON is never
+    read from or written to disk - it's parsed once at upload time and only the extracted
+    documents are stored."""
+    return_type = (return_type or "GSTR1").upper()
+    rstore = store.get(return_type)
+
     if client_id is None:
         client_id = client_db.get_active_client_id()
 
     cl = client_db.get_client(client_id) if client_id else None
     if not cl:
-        store.documents = []
-        store.monthly_stats = []
-        store.financial_totals = _empty_totals()
-        store.is_loaded = True
-        return store.financial_totals
+        rstore.documents = []
+        rstore.monthly_stats = []
+        rstore.financial_totals = _empty_totals(return_type)
+        rstore.is_loaded = True
+        return rstore.financial_totals
 
     reload_party_mappings()
 
-    stored_rows = client_db.get_invoice_documents(client_id)
+    stored_rows = client_db.get_invoice_documents(client_id, return_type)
 
     by_period: Dict[str, List[Dict[str, Any]]] = {}
     for row in stored_rows:
@@ -198,7 +230,7 @@ def reload_dataset(client_id: Optional[int] = None) -> Dict[str, Any]:
     for label in sorted(by_period.keys(), key=get_month_sort_key):
         docs = [_row_to_doc(r) for r in by_period[label]]
         all_docs.extend(docs)
-        month_stats.append(_month_stat(label, docs))
+        month_stats.append(_month_stat(label, docs, return_type))
 
     all_docs.sort(key=lambda d: d.doc_date)
 
@@ -209,15 +241,10 @@ def reload_dataset(client_id: Optional[int] = None) -> Dict[str, Any]:
     tot_igst = sum(t.amount for d in all_docs for t in d.tax_lines if t.tax_type == "IGST")
     all_parties = {d.party_gstin for d in all_docs if d.party_gstin}
 
-    store.documents = all_docs
-    store.monthly_stats = month_stats
-    store.financial_totals = {
+    totals = {
         "total_documents": len(all_docs),
         "total_b2b": sum(m["b2b_count"] for m in month_stats),
-        "total_b2c": sum(m["b2c_count"] for m in month_stats),
         "total_cdnr": sum(m["cdnr_count"] for m in month_stats),
-        "total_exp": sum(m["exp_count"] for m in month_stats),
-        "total_advance": sum(m["advance_count"] for m in month_stats),
         "unique_parties": len(all_parties),
         "taxable_turnover": round(tot_taxable, 2),
         "total_cgst": round(tot_cgst, 2),
@@ -227,16 +254,43 @@ def reload_dataset(client_id: Optional[int] = None) -> Dict[str, Any]:
         "gross_invoiced_value": round(tot_val, 2),
         "months_count": len(month_stats)
     }
-    store.is_loaded = True
+    if return_type == "GSTR1":
+        totals["total_b2c"] = sum(m.get("b2c_count", 0) for m in month_stats)
+        totals["total_exp"] = sum(m.get("exp_count", 0) for m in month_stats)
+        totals["total_advance"] = sum(m.get("advance_count", 0) for m in month_stats)
+    else:
+        totals["total_rcm"] = sum(m.get("rcm_count", 0) for m in month_stats)
+        totals["total_ineligible"] = sum(m.get("ineligible_count", 0) for m in month_stats)
+
+    rstore.documents = all_docs
+    rstore.monthly_stats = month_stats
+    rstore.financial_totals = totals
+    rstore.is_loaded = True
 
     # Sync into Client DB
     try:
         if client_id and client_db.get_client(client_id):
-            client_db.sync_return_periods_for_client(client_id, month_stats)
+            client_db.sync_return_periods_for_client(client_id, month_stats, return_type)
     except Exception as e:
         print(f"[WARN] Could not sync return periods: {e}")
 
-    return store.financial_totals
+    return rstore.financial_totals
+
+def _reload_both(client_id: Optional[int] = None) -> Dict[str, Any]:
+    """Reloads both the sales (GSTR1) and purchase (GSTR2B) datasets for a client -
+    used whenever the active client changes, since either tab could be viewed next."""
+    sales_totals = reload_dataset(client_id, "GSTR1")
+    reload_dataset(client_id, "GSTR2B")
+    return sales_totals
+
+def _clear_both_stores():
+    """Resets both in-memory stores to an empty, fully-loaded state (no active client)."""
+    for rt in ("GSTR1", "GSTR2B"):
+        rstore = store.get(rt)
+        rstore.documents = []
+        rstore.monthly_stats = []
+        rstore.financial_totals = _empty_totals(rt)
+        rstore.is_loaded = True
 
 def query_tally_company(endpoint: str = "http://127.0.0.1:9000") -> dict:
     """Checks TallyPrime connection and active company name."""
@@ -284,6 +338,7 @@ class ClientCreateRequest(BaseModel):
     notes: Optional[str] = None
     gst_username: Optional[str] = None
     gst_password: Optional[str] = None
+    financial_year: Optional[str] = None
 
 class ClientUpdateRequest(BaseModel):
     name: Optional[str] = None
@@ -301,6 +356,7 @@ class ClientUpdateRequest(BaseModel):
     notes: Optional[str] = None
     gst_username: Optional[str] = None
     gst_password: Optional[str] = None
+    financial_year: Optional[str] = None
 
 @app.get("/api/clients")
 def get_clients_list(search: Optional[str] = None, status: Optional[str] = None):
@@ -365,18 +421,9 @@ def delete_client_record(client_id: int):
     new_active_id = client_db.get_active_client_id()
     if was_active:
         if new_active_id:
-            store.is_loaded = False
-            reload_dataset(new_active_id)
+            _reload_both(new_active_id)
         else:
-            store.documents.clear()
-            store.monthly_stats.clear()
-            store.financial_totals = {
-                "total_documents": 0, "total_b2b": 0, "total_b2c": 0, "total_cdnr": 0,
-                "unique_parties": 0, "taxable_turnover": 0.0, "total_cgst": 0.0,
-                "total_sgst": 0.0, "total_igst": 0.0, "total_tax": 0.0,
-                "gross_invoiced_value": 0.0, "months_count": 0
-            }
-            store.is_loaded = True
+            _clear_both_stores()
 
     new_active_client = client_db.get_client(new_active_id) if new_active_id else None
 
@@ -392,27 +439,18 @@ def delete_client_record(client_id: int):
 def clear_active_client_selection():
     """Clears the active client session and unloads client dataset."""
     client_db.set_active_client_id(None)
-    store.documents.clear()
-    store.monthly_stats.clear()
-    store.financial_totals = {
-        "total_documents": 0, "total_b2b": 0, "total_b2c": 0, "total_cdnr": 0,
-        "unique_parties": 0, "taxable_turnover": 0.0, "total_cgst": 0.0,
-        "total_sgst": 0.0, "total_igst": 0.0, "total_tax": 0.0,
-        "gross_invoiced_value": 0.0, "months_count": 0
-    }
-    store.is_loaded = True
+    _clear_both_stores()
     return {"status": "success", "message": "Active client session cleared."}
 
 @app.post("/api/clients/{client_id}/select")
 def set_active_client(client_id: int):
-    """Sets the active client context and reloads only that client's data."""
+    """Sets the active client context and reloads both sales and purchase data."""
     try:
         cl = client_db.set_active_client_id(client_id)
         if cl.get("default_name_preference"):
             set_name_preference(cl["default_name_preference"])
             store.name_preference = cl["default_name_preference"]
-        store.is_loaded = False
-        totals = reload_dataset(client_id)
+        totals = _reload_both(client_id)
         return {"status": "success", "active_client": cl, "totals": totals}
     except ValueError as ve:
         raise HTTPException(status_code=404, detail=str(ve))
@@ -445,15 +483,7 @@ def lookup_gstin_details(gstin: str):
 def clear_all_db_records():
     """Wipes all data across all tables in SQLite database and resets autoincrement."""
     counts = client_db.clear_all_db_data()
-    store.documents.clear()
-    store.monthly_stats.clear()
-    store.financial_totals = {
-        "total_documents": 0, "total_b2b": 0, "total_b2c": 0, "total_cdnr": 0,
-        "unique_parties": 0, "taxable_turnover": 0.0, "total_cgst": 0.0,
-        "total_sgst": 0.0, "total_igst": 0.0, "total_tax": 0.0,
-        "gross_invoiced_value": 0.0, "months_count": 0
-    }
-    store.is_loaded = True
+    _clear_both_stores()
     return {
         "status": "success",
         "message": "All database records have been deleted.",
@@ -472,42 +502,43 @@ def get_status(endpoint: str = "http://127.0.0.1:9000"):
     return {
         "tally": tally_info,
         "active_client": active_cl,
-        "data_loaded": store.is_loaded,
-        "total_docs": len(store.documents),
+        "data_loaded": store.get("GSTR1").is_loaded and store.get("GSTR2B").is_loaded,
+        "total_docs": len(store.get("GSTR1").documents),
+        "total_purchase_docs": len(store.get("GSTR2B").documents),
         "name_preference": store.name_preference
     }
 
 @app.get("/api/overview")
-def get_overview():
-    """Returns overall financial KPIs, active client, and monthly breakdown."""
+def get_overview(return_type: str = "GSTR1"):
+    """Returns overall financial KPIs, active client, and monthly breakdown for one
+    return type: GSTR1 (sales) or GSTR2B (purchases)."""
+    return_type = (return_type or "GSTR1").upper()
     active_id = client_db.get_active_client_id()
     if not active_id:
-        empty_totals = {
-            "total_documents": 0, "total_b2b": 0, "total_b2c": 0, "total_cdnr": 0,
-            "unique_parties": 0, "taxable_turnover": 0.0, "total_cgst": 0.0,
-            "total_sgst": 0.0, "total_igst": 0.0, "total_tax": 0.0,
-            "gross_invoiced_value": 0.0, "months_count": 0
-        }
         return {
             "active_client": None,
-            "totals": empty_totals,
+            "totals": _empty_totals(return_type),
             "monthly_stats": [],
-            "name_preference": store.name_preference
+            "name_preference": store.name_preference,
+            "return_type": return_type
         }
 
-    if not store.is_loaded:
-        reload_dataset(active_id)
+    rstore = store.get(return_type)
+    if not rstore.is_loaded:
+        reload_dataset(active_id, return_type)
     active_cl = client_db.get_client(active_id)
     return {
         "active_client": active_cl,
-        "totals": store.financial_totals,
-        "monthly_stats": store.monthly_stats,
-        "name_preference": store.name_preference
+        "totals": rstore.financial_totals,
+        "monthly_stats": rstore.monthly_stats,
+        "name_preference": store.name_preference,
+        "return_type": return_type
     }
 
 @app.get("/api/parties")
 def get_parties(search: Optional[str] = None):
-    """Returns list of counterparties for the active client."""
+    """Returns the union of counterparties from BOTH sales and purchases for the active
+    client - a GSTIN the client sells to and also buys from shows up once, tagged as both."""
     active_id = client_db.get_active_client_id()
     if not active_id:
         return {
@@ -516,14 +547,18 @@ def get_parties(search: Optional[str] = None):
             "parties": []
         }
 
-    if not store.is_loaded:
-        reload_dataset(active_id)
+    for rt in ("GSTR1", "GSTR2B"):
+        if not store.get(rt).is_loaded:
+            reload_dataset(active_id, rt)
 
-    # Derive counterparties strictly from the active client's documents
+    # Derive counterparties from both datasets, tagging each GSTIN as customer/supplier/both
     party_docs: Dict[str, List[NormalizedDocument]] = {}
-    for d in store.documents:
-        if d.party_gstin:
-            party_docs.setdefault(d.party_gstin, []).append(d)
+    party_relation: Dict[str, set] = {}
+    for rt, relation in (("GSTR1", "Customer"), ("GSTR2B", "Supplier")):
+        for d in store.get(rt).documents:
+            if d.party_gstin:
+                party_docs.setdefault(d.party_gstin, []).append(d)
+                party_relation.setdefault(d.party_gstin, set()).add(relation)
 
     # One bulk query for every party's mapping instead of one query per party (N+1).
     all_mappings = client_db.get_party_mappings_bulk(list(party_docs.keys()))
@@ -554,6 +589,8 @@ def get_parties(search: Optional[str] = None):
         state_name = get_state_name(gstin)
         state_code = gstin[:2] if len(gstin) >= 2 else ""
         formatted_name = format_party_ledger(trade_name, gstin, pref)
+        relations = party_relation.get(gstin, set())
+        relation_label = "Both" if len(relations) > 1 else (next(iter(relations)) if relations else "Customer")
 
         parties_list.append({
             "gstin": gstin,
@@ -567,7 +604,8 @@ def get_parties(search: Optional[str] = None):
             "status": status,
             "center_jurisdiction": center_jur,
             "state_jurisdiction": state_jur,
-            "has_custom_mapping": bool(db_map)
+            "has_custom_mapping": bool(db_map),
+            "relation": relation_label
         })
 
     if search:
@@ -624,8 +662,8 @@ def start_portal_verification(req: Optional[PortalVerifyStartRequest] = None):
             gstin_list = [active_cl["gstin"]]
     elif req and req.mode == "unverified":
         if active_id:
-            reload_dataset(active_id)
-        all_gstins = sorted(list({d.party_gstin for d in store.documents if d.party_gstin}))
+            _reload_both(active_id)
+        all_gstins = sorted(list({d.party_gstin for rt in ("GSTR1", "GSTR2B") for d in store.get(rt).documents if d.party_gstin}))
         unverified = []
         for g in all_gstins:
             mp = client_db.get_party_mapping(g)
@@ -639,8 +677,8 @@ def start_portal_verification(req: Optional[PortalVerifyStartRequest] = None):
             )
     else:  # "counterparties", "all", or default
         if active_id:
-            reload_dataset(active_id)
-        gstin_list = sorted(list({d.party_gstin for d in store.documents if d.party_gstin}))
+            _reload_both(active_id)
+        gstin_list = sorted(list({d.party_gstin for rt in ("GSTR1", "GSTR2B") for d in store.get(rt).documents if d.party_gstin}))
 
     if not gstin_list:
         raise HTTPException(status_code=400, detail="No GSTINs found to verify. Please upload returns or specify GSTIN.")
@@ -696,6 +734,97 @@ def reset_portal_verification():
     portal_verifier.verifier_service.reset()
     return {"status": "success", "message": "Verification session reset to idle."}
 
+class GSTR2BDownloadStartRequest(BaseModel):
+    months: List[int]
+    gst_username: Optional[str] = None
+    gst_password: Optional[str] = None
+    debug: Optional[bool] = False
+
+@app.post("/api/gstr2b/download/start")
+def start_gstr2b_download(req: GSTR2BDownloadStartRequest):
+    """Launches Chrome to the GST portal and downloads GSTR-2B JSON for the active
+    client's selected months (restricted to their configured Financial Year),
+    importing each one straight into the Purchases dataset - never saved as a file."""
+    import gstr2b_portal_downloader as g2b
+
+    active_id = client_db.get_active_client_id()
+    active_cl = client_db.get_client(active_id) if active_id else None
+    if not active_cl:
+        raise HTTPException(status_code=400, detail="Select an active taxpayer client first.")
+
+    fy = (active_cl.get("financial_year") or "").strip()
+    if not fy:
+        raise HTTPException(
+            status_code=400,
+            detail="Set this client's Financial Year on their profile before downloading GSTR-2B from the portal."
+        )
+
+    req_username = (req.gst_username or "").strip() or None
+    req_password = (req.gst_password or "").strip() or None
+    if req_username or req_password:
+        client_db.update_client(active_cl["id"], {
+            k: v for k, v in {"gst_username": req_username, "gst_password": req_password}.items() if v
+        })
+        active_cl = client_db.get_client(active_id)
+
+    final_username = req_username or active_cl.get("gst_username")
+    final_password = req_password or active_cl.get("gst_password")
+    if not final_username or not final_password:
+        raise HTTPException(status_code=400, detail="GST Portal username & password are required.")
+
+    client_id = active_cl["id"]
+    client_gstin = active_cl.get("gstin", "")
+
+    def _ingest(filename: str, payload: dict):
+        return _ingest_return_payload(client_id, filename, payload, client_gstin)
+
+    started = g2b.downloader_service.start(
+        fy=fy,
+        months=req.months,
+        gst_username=final_username,
+        gst_password=final_password,
+        ingest_fn=_ingest,
+        on_month_done=lambda: _reload_both(client_id),
+        debug=bool(req.debug),
+    )
+    if not started:
+        state = g2b.downloader_service.get_state()
+        detail = state.get("error") or "A GSTR-2B download session is already in progress."
+        raise HTTPException(status_code=409, detail=detail)
+
+    return {"status": "started", "fy": fy, "total": len(req.months)}
+
+@app.get("/api/gstr2b/download/status")
+def get_gstr2b_download_status():
+    """Polls real-time GSTR-2B download progress, terminal logs, and per-month results."""
+    import gstr2b_portal_downloader as g2b
+    return g2b.downloader_service.get_state()
+
+@app.post("/api/gstr2b/download/submit-captcha")
+def submit_gstr2b_download_captcha(req: CaptchaSubmitRequest):
+    """Relays the CAPTCHA answer the user typed on our own page into the headless
+    browser's login form for the GSTR-2B downloader."""
+    import gstr2b_portal_downloader as g2b
+    answer = (req.answer or "").strip()
+    if not answer:
+        raise HTTPException(status_code=400, detail="CAPTCHA answer is required.")
+    g2b.downloader_service.submit_captcha(answer)
+    return {"status": "success"}
+
+@app.post("/api/gstr2b/download/cancel")
+def cancel_gstr2b_download():
+    """Aborts the GSTR-2B download session and closes Chrome."""
+    import gstr2b_portal_downloader as g2b
+    g2b.downloader_service.cancel()
+    return {"status": "success", "message": "GSTR-2B download session cancelled."}
+
+@app.post("/api/gstr2b/download/reset")
+def reset_gstr2b_download():
+    """Resets the GSTR-2B download session to idle and clears logs & results."""
+    import gstr2b_portal_downloader as g2b
+    g2b.downloader_service.reset()
+    return {"status": "success", "message": "GSTR-2B download session reset to idle."}
+
 class PartySaveRequest(BaseModel):
     gstin: str
     trade_name: str
@@ -722,8 +851,7 @@ def clear_all_party_mappings_endpoint():
     count = client_db.clear_all_party_mappings()
     active_id = client_db.get_active_client_id()
     if active_id:
-        store.is_loaded = False
-        reload_dataset(active_id)
+        _reload_both(active_id)
     return {
         "status": "success",
         "message": "All saved GSTIN party mappings cleared successfully.",
@@ -753,17 +881,187 @@ def set_preference_name(pref: str = Query(...)):
     store.name_preference = clean
     return {"status": "success", "name_preference": clean}
 
+def _filter_and_sort_documents(
+    documents: List[NormalizedDocument],
+    month: Optional[str] = None,
+    doc_type: Optional[str] = None,
+    validation_status: Optional[str] = None,
+    search: Optional[str] = None,
+    sort_by: Optional[str] = None,
+    sort_dir: str = "asc"
+) -> List[NormalizedDocument]:
+    """Shared filter+sort chain for the Transactions Explorer - used by both the
+    paginated /api/invoices endpoint and the full Excel export, so the export
+    always reflects exactly what the on-screen filters currently show."""
+    filtered = documents
+
+    if month:
+        m_lower = month.lower()
+        filtered = [d for d in filtered if m_lower in d.doc_date]
+
+    if doc_type:
+        dt_upper = doc_type.upper().strip()
+        if dt_upper in ("B2B", "B2BA"):
+            filtered = [d for d in filtered if d.doc_type in ("B2B", "B2BA")]
+        elif dt_upper in ("CDNR", "CREDIT", "CDNRA", "CDNUR", "CDNURA"):
+            filtered = [d for d in filtered if "CREDIT" in d.doc_type or "DEBIT" in d.doc_type]
+        elif dt_upper in ("B2CS", "B2CSA"):
+            filtered = [d for d in filtered if d.doc_type in ("B2CS", "B2CSA")]
+        elif dt_upper in ("B2CL", "B2CLA"):
+            filtered = [d for d in filtered if d.doc_type in ("B2CL", "B2CLA")]
+        elif dt_upper == "EXP":
+            filtered = [d for d in filtered if d.doc_type.startswith("EXP")]
+        elif dt_upper == "ADVANCE":
+            filtered = [d for d in filtered if d.doc_type.startswith("ADVANCE")]
+        elif dt_upper == "RCM":
+            filtered = [d for d in filtered if d.doc_type in ("B2B_RCM", "B2BA_RCM", "RCM_SELF_INVOICE")]
+        elif dt_upper == "INELIGIBLE":
+            filtered = [d for d in filtered if d.doc_type in ("B2B_INELIGIBLE", "B2BA_INELIGIBLE")]
+        else:
+            filtered = [d for d in filtered if dt_upper in d.doc_type]
+
+    if validation_status:
+        vs = validation_status.lower().strip()
+        if vs == "balanced":
+            filtered = [d for d in filtered if _doc_discrepancy(d) < 0.01]
+        elif vs == "rounded":
+            filtered = [d for d in filtered if 0.01 <= _doc_discrepancy(d) <= 2.0]
+        elif vs == "discrepant":
+            filtered = [d for d in filtered if _doc_discrepancy(d) > 2.0]
+
+    if search:
+        s = search.lower().strip()
+        filtered = [
+            d for d in filtered
+            if s in d.doc_number.lower() or (d.party_name and s in d.party_name.lower()) or (d.party_gstin and s in d.party_gstin.lower())
+        ]
+
+    if sort_by:
+        sort_keys = {
+            "doc_type": lambda d: d.doc_type or "",
+            "doc_number": lambda d: d.doc_number or "",
+            "date": lambda d: d.doc_date or "",
+            "party": lambda d: (d.party_name or "").lower(),
+            "gstin": lambda d: d.party_gstin or "",
+            "rate": lambda d: (_effective_rates(d.tax_lines) or [0.0])[-1],
+            "taxable_val": lambda d: d.taxable_val,
+            "cgst": lambda d: sum(t.amount for t in d.tax_lines if t.tax_type == "CGST"),
+            "sgst": lambda d: sum(t.amount for t in d.tax_lines if t.tax_type == "SGST"),
+            "igst": lambda d: sum(t.amount for t in d.tax_lines if t.tax_type == "IGST"),
+            "tax": lambda d: sum(t.amount for t in d.tax_lines),
+            "total_val": lambda d: d.total_val,
+        }
+        key_fn = sort_keys.get(sort_by)
+        if key_fn:
+            filtered = sorted(filtered, key=key_fn, reverse=(sort_dir == "desc"))
+
+    return filtered
+
+def _effective_rates(tax_lines: List[TaxLine]) -> List[float]:
+    """Recovers the actual GST rate(s) charged on a document. CGST/SGST are each
+    stored at HALF the invoice rate (e.g. 9 for an 18% intrastate supply) while
+    IGST is stored at the full rate - reading either one directly as "the rate"
+    is wrong for intrastate invoices specifically. A single invoice can also carry
+    more than one rate if its line items differ, which is reported as-is rather
+    than silently picking one item's rate and hiding the rest."""
+    rates = set()
+    for t in tax_lines:
+        if t.tax_type == "CGST":
+            rates.add(round(t.rate * 2, 2))
+        elif t.tax_type == "IGST":
+            rates.add(round(t.rate, 2))
+    return sorted(rates)
+
+def _format_rate_display(rates: List[float]) -> str:
+    if not rates:
+        return "Nil-Rated"
+    if len(rates) == 1:
+        r = rates[0]
+        return f"{r:g}%"
+    return "Multiple (" + ", ".join(f"{r:g}%" for r in rates) + ")"
+
+def _build_invoice_row(d: NormalizedDocument, pref: str) -> Dict[str, Any]:
+    """Builds one Transactions Explorer row (JSON API and Excel export both use this,
+    so the export's columns are always the same numbers shown on screen)."""
+    cgst = sum(t.amount for t in d.tax_lines if t.tax_type == "CGST")
+    sgst = sum(t.amount for t in d.tax_lines if t.tax_type == "SGST")
+    igst = sum(t.amount for t in d.tax_lines if t.tax_type == "IGST")
+    tot_tax = cgst + sgst + igst
+    eff_rates = _effective_rates(d.tax_lines)
+
+    formatted_name = format_party_ledger(d.party_name, d.party_gstin, pref)
+
+    # Format date as DD/MM/YYYY for UI display (e.g. 20250501 -> 01/05/2025)
+    raw_dt = str(d.doc_date or "").strip()
+    if len(raw_dt) == 8 and raw_dt.isdigit():
+        display_dt = f"{raw_dt[6:8]}/{raw_dt[4:6]}/{raw_dt[0:4]}"
+    elif len(raw_dt) == 10 and "-" in raw_dt:
+        dp = raw_dt.split("-")
+        display_dt = f"{dp[2].zfill(2)}/{dp[1].zfill(2)}/{dp[0]}" if len(dp) == 3 and len(dp[0]) == 4 else raw_dt
+    else:
+        display_dt = raw_dt or "-"
+
+    # Double-entry balance calculation (journal-only docs like RCM self-invoices
+    # and advance-tax entries don't follow taxable_val+tax=total_val, so they're
+    # always reported as balanced rather than run through this formula)
+    if domain.is_journal_doc(d):
+        diff = 0.0
+        val_status = "balanced"
+        val_label = "Balanced (Journal)"
+    else:
+        diff = round(d.total_val - (d.taxable_val + tot_tax), 2)
+        abs_diff = abs(diff)
+        if abs_diff < 0.01:
+            val_status = "balanced"
+            val_label = "Balanced"
+        elif abs_diff <= 2.0:
+            val_status = "rounded"
+            val_label = f"Round Off ({diff:+.2f})"
+        else:
+            val_status = "discrepant"
+            val_label = f"Mismatch ({diff:+.2f})"
+
+    return {
+        "doc_num": d.doc_number,
+        "doc_number": d.doc_number,
+        "doc_date": display_dt,
+        "raw_date": d.doc_date,
+        "doc_type": d.doc_type,
+        "party_gstin": d.party_gstin or "Unregistered",
+        "party_name": d.party_name,
+        "party_ledger": formatted_name,
+        "ledger_name": formatted_name,
+        "tax_rates": eff_rates,
+        "rate_display": _format_rate_display(eff_rates),
+        "taxable_val": round(d.taxable_val, 2),
+        "cgst": round(cgst, 2),
+        "sgst": round(sgst, 2),
+        "igst": round(igst, 2),
+        "total_tax": round(tot_tax, 2),
+        "total_val": round(d.total_val, 2),
+        "diff": diff,
+        "round_off": round(-diff, 2) if val_status == "rounded" else 0.0,
+        "validation_status": val_status,
+        "validation_label": val_label
+    }
+
 @app.get("/api/invoices")
 def get_invoices(
+    return_type: str = "GSTR1",
     month: Optional[str] = None,
     doc_type: Optional[str] = None,
     search: Optional[str] = None,
     validation_status: Optional[str] = None,
     page: int = 1,
     limit: Optional[int] = None,
-    page_size: Optional[int] = None
+    page_size: Optional[int] = None,
+    sort_by: Optional[str] = None,
+    sort_dir: str = "asc"
 ):
-    """Returns paginated, searchable invoices list for active client."""
+    """Returns paginated, searchable invoices list for the active client's sales
+    (GSTR1) or purchases (GSTR2B)."""
+    return_type = (return_type or "GSTR1").upper()
+    rstore = store.get(return_type)
     try:
         p = int(page)
     except Exception:
@@ -787,115 +1085,24 @@ def get_invoices(
             "validation_summary": {"total": 0, "balanced": 0, "rounded": 0, "discrepant": 0}
         }
 
-    if not store.is_loaded:
-        reload_dataset(active_id)
+    if not rstore.is_loaded:
+        reload_dataset(active_id, return_type)
 
-    filtered = store.documents
-
-    if month:
-        m_lower = month.lower()
-        filtered = [d for d in filtered if m_lower in d.doc_date]
-
-    if doc_type:
-        dt_upper = doc_type.upper().strip()
-        if dt_upper in ("B2B", "B2BA"):
-            filtered = [d for d in filtered if d.doc_type in ("B2B", "B2BA")]
-        elif dt_upper in ("CDNR", "CREDIT", "CDNRA", "CDNUR", "CDNURA"):
-            filtered = [d for d in filtered if "CREDIT" in d.doc_type or "DEBIT" in d.doc_type]
-        elif dt_upper in ("B2CS", "B2CSA"):
-            filtered = [d for d in filtered if d.doc_type in ("B2CS", "B2CSA")]
-        elif dt_upper in ("B2CL", "B2CLA"):
-            filtered = [d for d in filtered if d.doc_type in ("B2CL", "B2CLA")]
-        elif dt_upper == "EXP":
-            filtered = [d for d in filtered if d.doc_type.startswith("EXP")]
-        elif dt_upper == "ADVANCE":
-            filtered = [d for d in filtered if d.doc_type.startswith("ADVANCE")]
-        else:
-            filtered = [d for d in filtered if dt_upper in d.doc_type]
-
-    if validation_status:
-        vs = validation_status.lower().strip()
-        if vs == "balanced":
-            filtered = [d for d in filtered if abs(round(d.total_val - (d.taxable_val + sum(t.amount for t in d.tax_lines)), 2)) < 0.01]
-        elif vs == "rounded":
-            filtered = [d for d in filtered if 0.01 <= abs(round(d.total_val - (d.taxable_val + sum(t.amount for t in d.tax_lines)), 2)) <= 2.0]
-        elif vs == "discrepant":
-            filtered = [d for d in filtered if abs(round(d.total_val - (d.taxable_val + sum(t.amount for t in d.tax_lines)), 2)) > 2.0]
-
-    if search:
-        s = search.lower().strip()
-        filtered = [
-            d for d in filtered
-            if s in d.doc_number.lower() or (d.party_name and s in d.party_name.lower()) or (d.party_gstin and s in d.party_gstin.lower())
-        ]
+    filtered = _filter_and_sort_documents(rstore.documents, month, doc_type, validation_status, search, sort_by, sort_dir)
 
     total_count = len(filtered)
     start_idx = (page - 1) * ps
     end_idx = start_idx + ps
     paged_docs = filtered[start_idx:end_idx]
 
-    inv_list = []
     pref = store.name_preference
-    for d in paged_docs:
-        cgst = sum(t.amount for t in d.tax_lines if t.tax_type == "CGST")
-        sgst = sum(t.amount for t in d.tax_lines if t.tax_type == "SGST")
-        igst = sum(t.amount for t in d.tax_lines if t.tax_type == "IGST")
-        tot_tax = cgst + sgst + igst
-        tax_rate = d.tax_lines[0].rate if d.tax_lines else 18.0
-        
-        formatted_name = format_party_ledger(d.party_name, d.party_gstin, pref)
-
-        # Format date as DD/MM/YYYY for UI display (e.g. 20250501 -> 01/05/2025)
-        raw_dt = str(d.doc_date or "").strip()
-        if len(raw_dt) == 8 and raw_dt.isdigit():
-            display_dt = f"{raw_dt[6:8]}/{raw_dt[4:6]}/{raw_dt[0:4]}"
-        elif len(raw_dt) == 10 and "-" in raw_dt:
-            dp = raw_dt.split("-")
-            display_dt = f"{dp[2].zfill(2)}/{dp[1].zfill(2)}/{dp[0]}" if len(dp) == 3 and len(dp[0]) == 4 else raw_dt
-        else:
-            display_dt = raw_dt or "-"
-
-        # Double-entry balance calculation
-        diff = round(d.total_val - (d.taxable_val + tot_tax), 2)
-        abs_diff = abs(diff)
-        if abs_diff < 0.01:
-            val_status = "balanced"
-            val_label = "Balanced"
-        elif abs_diff <= 2.0:
-            val_status = "rounded"
-            val_label = f"Round Off ({diff:+.2f})"
-        else:
-            val_status = "discrepant"
-            val_label = f"Mismatch ({diff:+.2f})"
-
-        inv_list.append({
-            "doc_num": d.doc_number,
-            "doc_number": d.doc_number,
-            "doc_date": display_dt,
-            "raw_date": d.doc_date,
-            "doc_type": d.doc_type,
-            "party_gstin": d.party_gstin or "Unregistered",
-            "party_name": d.party_name,
-            "party_ledger": formatted_name,
-            "ledger_name": formatted_name,
-            "tax_rate": tax_rate,
-            "taxable_val": round(d.taxable_val, 2),
-            "cgst": round(cgst, 2),
-            "sgst": round(sgst, 2),
-            "igst": round(igst, 2),
-            "total_tax": round(tot_tax, 2),
-            "total_val": round(d.total_val, 2),
-            "diff": diff,
-            "round_off": round(-diff, 2) if val_status == "rounded" else 0.0,
-            "validation_status": val_status,
-            "validation_label": val_label
-        })
+    inv_list = [_build_invoice_row(d, pref) for d in paged_docs]
 
     # Summary across all loaded documents
-    all_docs = store.documents
-    balanced_cnt = sum(1 for d in all_docs if abs(round(d.total_val - (d.taxable_val + sum(t.amount for t in d.tax_lines)), 2)) < 0.01)
-    rounded_cnt = sum(1 for d in all_docs if 0.01 <= abs(round(d.total_val - (d.taxable_val + sum(t.amount for t in d.tax_lines)), 2)) <= 2.0)
-    discrepant_cnt = sum(1 for d in all_docs if abs(round(d.total_val - (d.taxable_val + sum(t.amount for t in d.tax_lines)), 2)) > 2.0)
+    all_docs = rstore.documents
+    balanced_cnt = sum(1 for d in all_docs if _doc_discrepancy(d) < 0.01)
+    rounded_cnt = sum(1 for d in all_docs if 0.01 <= _doc_discrepancy(d) <= 2.0)
+    discrepant_cnt = sum(1 for d in all_docs if _doc_discrepancy(d) > 2.0)
 
     return {
         "total": total_count,
@@ -914,17 +1121,97 @@ def get_invoices(
         }
     }
 
+@app.get("/api/export-invoices-xlsx")
+def export_invoices_xlsx(
+    return_type: str = "GSTR1",
+    month: Optional[str] = None,
+    doc_type: Optional[str] = None,
+    search: Optional[str] = None,
+    validation_status: Optional[str] = None,
+    sort_by: Optional[str] = None,
+    sort_dir: str = "asc"
+):
+    """Exports every transaction matching the current Transactions Explorer filters
+    (not just the current page) as an Excel workbook - built in memory, never
+    written to disk, matching the rest of the app's no-stored-file policy."""
+    return_type = (return_type or "GSTR1").upper()
+    rstore = store.get(return_type)
+
+    active_id = client_db.get_active_client_id()
+    if not active_id:
+        raise HTTPException(status_code=400, detail="No active client selected.")
+
+    if not rstore.is_loaded:
+        reload_dataset(active_id, return_type)
+
+    filtered = _filter_and_sort_documents(rstore.documents, month, doc_type, validation_status, search, sort_by, sort_dir)
+    pref = store.name_preference
+    rows = [_build_invoice_row(d, pref) for d in filtered]
+
+    import openpyxl
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Transactions"
+
+    headers = [
+        "Type", "Doc Number", "Date", "Party Ledger / Customer", "GSTIN", "Rate",
+        "Taxable Value", "CGST", "SGST", "IGST", "Total GST", "Invoice Total", "Balance Status"
+    ]
+    ws.append(headers)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+
+    for r in rows:
+        ws.append([
+            r["doc_type"], r["doc_number"], r["doc_date"], r["party_ledger"], r["party_gstin"],
+            r["rate_display"], r["taxable_val"], r["cgst"], r["sgst"], r["igst"], r["total_tax"],
+            r["total_val"], r["validation_label"]
+        ])
+
+    for i, width in enumerate([12, 22, 12, 32, 18, 8, 14, 12, 12, 12, 14, 14, 18], start=1):
+        ws.column_dimensions[get_column_letter(i)].width = width
+    ws.freeze_panes = "A2"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    active_cl = client_db.get_client(active_id)
+    gstin = (active_cl or {}).get("gstin") or "export"
+    suffix = "Sales" if return_type == "GSTR1" else "Purchases"
+    filename = f"{gstin}_{suffix}_Transactions.xlsx"
+
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+def _xml_filenames(return_type: str) -> tuple:
+    """Sales and purchases each get their own Masters/Entries files so generating
+    one never clobbers the other."""
+    suffix = "Sales" if (return_type or "GSTR1").upper() == "GSTR1" else "Purchases"
+    return (OUTPUT_DIR / f"Consolidated_Masters_{suffix}.xml", OUTPUT_DIR / f"Consolidated_Entries_{suffix}.xml")
+
 @app.post("/api/generate-xml")
-def generate_xml(preference: Optional[str] = None):
-    """Generates Consolidated XML files for the active client."""
+def generate_xml(preference: Optional[str] = None, return_type: str = "GSTR1"):
+    """Generates Consolidated Masters/Entries XML for the active client's sales
+    (GSTR1) or purchases (GSTR2B)."""
+    return_type = (return_type or "GSTR1").upper()
     active_id = client_db.get_active_client_id()
     if not active_id:
         raise HTTPException(status_code=400, detail="No active client selected. Please select a client first.")
 
-    reload_dataset(active_id)
+    reload_dataset(active_id, return_type)
+    rstore = store.get(return_type)
 
-    if not store.documents:
-        raise HTTPException(status_code=400, detail="No documents found for this client to export.")
+    if not rstore.documents:
+        detail = "No documents found for this client to export." if return_type == "GSTR1" else \
+            "No purchase documents found for this client to export."
+        raise HTTPException(status_code=400, detail=detail)
 
     pref = (preference or store.name_preference or "trade").strip().lower()
     set_name_preference(pref)
@@ -934,24 +1221,24 @@ def generate_xml(preference: Optional[str] = None):
     import xml_engine
     importlib.reload(xml_engine)
 
-    masters_xml = xml_engine.TallyXMLEngine.generate_masters_xml(store.documents, "GSTR1")
-    entries_xml = xml_engine.TallyXMLEngine.generate_entries_xml(store.documents, "GSTR1")
+    masters_xml = xml_engine.TallyXMLEngine.generate_masters_xml(rstore.documents, return_type)
+    entries_xml = xml_engine.TallyXMLEngine.generate_entries_xml(rstore.documents, return_type)
 
-    masters_path = OUTPUT_DIR / "Consolidated_Masters.xml"
-    entries_path = OUTPUT_DIR / "Consolidated_Entries.xml"
+    masters_path, entries_path = _xml_filenames(return_type)
     masters_path.write_text(masters_xml, encoding="utf-8")
     entries_path.write_text(entries_xml, encoding="utf-8")
 
     m_count = masters_xml.count('<LEDGER ACTION="Create"')
     v_count = entries_xml.count('<VOUCHER ACTION="Create"')
 
-    all_docs = store.documents
-    discrepant_cnt = sum(1 for d in all_docs if abs(round(d.total_val - (d.taxable_val + sum(t.amount for t in d.tax_lines)), 2)) > 2.0)
-    rounded_cnt = sum(1 for d in all_docs if 0.01 <= abs(round(d.total_val - (d.taxable_val + sum(t.amount for t in d.tax_lines)), 2)) <= 2.0)
-    balanced_cnt = sum(1 for d in all_docs if abs(round(d.total_val - (d.taxable_val + sum(t.amount for t in d.tax_lines)), 2)) < 0.01)
+    all_docs = rstore.documents
+    discrepant_cnt = sum(1 for d in all_docs if _doc_discrepancy(d) > 2.0)
+    rounded_cnt = sum(1 for d in all_docs if 0.01 <= _doc_discrepancy(d) <= 2.0)
+    balanced_cnt = sum(1 for d in all_docs if _doc_discrepancy(d) < 0.01)
 
     return {
         "status": "success",
+        "return_type": return_type,
         "name_preference": store.name_preference,
         "masters_file": masters_path.name,
         "masters_size": masters_path.stat().st_size,
@@ -967,10 +1254,12 @@ def generate_xml(preference: Optional[str] = None):
 class ImportRequest(BaseModel):
     target: str = "both"  # "both", "masters", "vouchers"
     endpoint: str = "http://127.0.0.1:9000"
+    return_type: str = "GSTR1"
 
 @app.post("/api/import-tally")
 def import_to_tally(req: ImportRequest):
     """Posts Consolidated XML directly to TallyPrime via HTTP."""
+    return_type = (req.return_type or "GSTR1").upper()
     active_id = client_db.get_active_client_id()
     if not active_id:
         raise HTTPException(status_code=400, detail="No active client selected. Please select a client first.")
@@ -979,15 +1268,15 @@ def import_to_tally(req: ImportRequest):
     # 1. Any deleted months/periods are immediately removed.
     # 2. Freshly uploaded returns and decimal values are used.
     # 3. No stale file on disk is ever posted to Tally.
-    reload_dataset(active_id)
+    reload_dataset(active_id, return_type)
+    rstore = store.get(return_type)
 
-    if not store.documents:
+    if not rstore.documents:
         raise HTTPException(status_code=400, detail="No documents found for this client to export/import.")
 
-    generate_xml(store.name_preference)
+    generate_xml(store.name_preference, return_type)
 
-    masters_file = OUTPUT_DIR / "Consolidated_Masters.xml"
-    entries_file = OUTPUT_DIR / "Consolidated_Entries.xml"
+    masters_file, entries_file = _xml_filenames(return_type)
 
     def post_file(fpath: Path):
         with open(fpath, "r", encoding="utf-8") as f:
@@ -1018,7 +1307,22 @@ def import_to_tally(req: ImportRequest):
         if req.target in ("both", "vouchers"):
             results["vouchers"] = post_file(entries_file)
 
-        return {"status": "success", "results": results}
+        # Record exactly which vouchers this push put into Tally, so a later period
+        # deletion in this tool can cancel those same vouchers in Tally instead of
+        # leaving them there as orphans. Best-effort: Tally only reports aggregate
+        # counts, not which specific vouchers failed, so a push that partially errors
+        # still records all attempted vouchers - a stale "Cancel" for one Tally never
+        # actually created is harmless (Tally just can't find it).
+        if "vouchers" in results:
+            import xml_engine
+            identities = xml_engine.TallyXMLEngine.list_voucher_identities(rstore.documents, return_type)
+            client_db.record_tally_pushes(active_id, return_type, identities)
+
+        # Tally responding is not the same as Tally accepting the vouchers - a
+        # blanket "success" here regardless of <ERRORS>/<EXCEPTIONS> in its response
+        # would misrepresent a partially/fully rejected import as clean.
+        had_issues = any(r.get("errors") or r.get("exceptions") for r in results.values())
+        return {"status": "completed_with_issues" if had_issues else "success", "results": results}
     except requests.exceptions.ConnectionError:
         raise HTTPException(
             status_code=503,
@@ -1074,15 +1378,66 @@ def extract_gstin_from_file_bytes(filename: str, content: bytes) -> Optional[str
 
     return None
 
+def _detect_return_type(filename: str, payload: dict) -> str:
+    """Best-effort GSTR1 (sales) vs GSTR2B (purchases) detection so the user doesn't have
+    to say which they're uploading. Filename hint first (GSTN's own downloads are named
+    accordingly), then payload shape: GSTR-2B always carries an 'itcsumm' summary block
+    and per-invoice itcavl/imsStatus flags that GSTR-1 never has."""
+    fname_upper = (filename or "").upper()
+    if "2B" in fname_upper:
+        return "GSTR2B"
+    if "GSTR1" in fname_upper or "GSTR-1" in fname_upper:
+        return "GSTR1"
+
+    def _has_itcsumm(node, depth=0):
+        if not isinstance(node, dict) or depth > 3:
+            return False
+        if "itcsumm" in node:
+            return True
+        return any(_has_itcsumm(v, depth + 1) for v in node.values() if isinstance(v, dict))
+
+    if _has_itcsumm(payload):
+        return "GSTR2B"
+
+    root = domain.unwrap_gst_payload(payload)
+    for b2b in (root.get("b2b") or []):
+        for inv in (b2b.get("inv") or []):
+            return "GSTR2B" if ("itcavl" in inv or "imsStatus" in inv) else "GSTR1"
+
+    return "GSTR1"
+
+def _ingest_return_payload(client_id: int, filename: str, payload: dict, client_gstin: str = "") -> Optional[tuple]:
+    """Extracts documents from one parsed GSTR-1/GSTR-2B payload and persists them for
+    the client. Returns (return_type, doc_count), or None if nothing was ingested
+    (GSTIN mismatch or no documents). Shared by /api/upload and the GSTR-2B portal
+    downloader so both go through the exact same parsing/persistence path."""
+    root_payload = domain.unwrap_gst_payload(payload)
+    file_gstin = (root_payload.get("gstin") or payload.get("gstin") or "").strip().upper()
+    if client_gstin and file_gstin and file_gstin != client_gstin.strip().upper():
+        print(f"[WARN] Skipped '{filename}': GSTIN {file_gstin} does not match client {client_gstin}.")
+        return None
+
+    file_return_type = _detect_return_type(filename, payload)
+    docs = GSTDataExtractor.extract_documents(payload, file_return_type)
+    if not docs:
+        return None
+
+    label = Path(filename).stem
+    client_db.save_invoice_documents(client_id, label, [_doc_to_row(d) for d in docs], file_return_type)
+    return file_return_type, len(docs)
+
 import io
 
 @app.post("/api/upload")
 async def upload_files(
     files: List[UploadFile] = File(...),
     client_id: Optional[int] = None,
-    clear_existing: bool = Query(False)
+    clear_existing: bool = Query(False),
+    confirm_new_client: bool = Query(False),
+    confirm_duplicate_periods: bool = Query(False)
 ):
-    """Uploads GSTR-1 files, automatically routes to client folder by GSTIN, and activates client."""
+    """Uploads GSTR-1 (sales) or GSTR-2B (purchases) files - auto-detected per file -
+    routes to client folder by GSTIN, and activates client."""
     saved_files = []
     detected_gstin = None
     resolved_client = None
@@ -1099,12 +1454,33 @@ async def upload_files(
         if gstin:
             detected_gstin = gstin
 
-    # If detected_gstin differs from passed client_id's GSTIN, route to matching or new client
+    # If detected_gstin differs from an already-active client's GSTIN, this could be a
+    # misclick (wrong client's file), so it stops for explicit confirmation instead of
+    # silently switching the active client or spawning a new one. With no active client
+    # resolved yet (fresh onboarding, nothing to conflict with) it proceeds as before.
     if detected_gstin:
         if resolved_client and resolved_client.get("gstin", "").upper() == detected_gstin:
             pass  # Matches correctly
+        elif resolved_client and not confirm_new_client:
+            clients = client_db.list_clients()
+            match = next((c for c in clients if c["gstin"].upper() == detected_gstin), None)
+            raise HTTPException(status_code=409, detail={
+                "error": "gstin_mismatch",
+                "message": (
+                    f"This file's GSTIN ({detected_gstin}) does not match the active client "
+                    f"'{resolved_client['name']}' ({resolved_client['gstin']})."
+                ),
+                "detected_gstin": detected_gstin,
+                "active_client": {
+                    "id": resolved_client["id"], "name": resolved_client["name"], "gstin": resolved_client["gstin"]
+                },
+                "existing_client_match": (
+                    {"id": match["id"], "name": match["name"], "gstin": match["gstin"]} if match else None
+                )
+            })
         else:
-            # Look for existing client with this GSTIN
+            # No active client to conflict with, or the mismatch was already confirmed -
+            # route to a matching existing client, or create one for this GSTIN.
             clients = client_db.list_clients()
             match = next((c for c in clients if c["gstin"].upper() == detected_gstin), None)
             if match:
@@ -1127,16 +1503,12 @@ async def upload_files(
     if not client_id:
         raise HTTPException(status_code=400, detail="Could not determine a target client for this upload.")
 
-    # If user selected to clear existing return data for this client
-    if clear_existing:
-        client_db.clear_client_documents(client_id)
-
     client_gstin = (resolved_client or {}).get("gstin", "").strip().upper()
 
-    # Parse each upload in-memory and persist only the EXTRACTED documents - the raw
-    # JSON/zip bytes are never written to disk.
+    # Parse every file up front - needed both to check for duplicate periods before
+    # touching the database, and to actually ingest afterward, without parsing twice.
+    parsed_files = []  # (filename, payload, file_return_type, period_label)
     for filename, content in file_bytes_list:
-        label = Path(filename).stem
         payload = None
 
         if filename.lower().endswith(".zip"):
@@ -1157,64 +1529,143 @@ async def upload_files(
         if payload is None:
             continue
 
-        root_payload = domain.unwrap_gst_payload(payload)
-        file_gstin = (root_payload.get("gstin") or payload.get("gstin") or "").strip().upper()
-        if client_gstin and file_gstin and file_gstin != client_gstin:
-            print(f"[WARN] Skipped '{filename}': GSTIN {file_gstin} does not match client {client_gstin}.")
-            continue
+        file_return_type = _detect_return_type(filename, payload)
+        parsed_files.append((filename, payload, file_return_type, Path(filename).stem))
 
-        docs = GSTDataExtractor.extract_documents(payload, "GSTR1")
-        if not docs:
-            continue
+    # A period already holding data will get MORE added to it, not replaced, unless
+    # "Clear Existing" is checked - easy to not notice when re-uploading a period you
+    # already loaded. Stop and ask, once, rather than silently duplicating documents.
+    if not clear_existing and not confirm_duplicate_periods:
+        existing_periods_by_type: Dict[str, set] = {}
+        duplicates = []
+        for filename, payload, file_return_type, label in parsed_files:
+            if file_return_type not in existing_periods_by_type:
+                existing_periods_by_type[file_return_type] = set(
+                    client_db.list_invoice_periods(client_id, file_return_type)
+                )
+            if label in existing_periods_by_type[file_return_type]:
+                duplicates.append({"filename": filename, "period_label": label, "return_type": file_return_type})
+        if duplicates:
+            raise HTTPException(status_code=409, detail={
+                "error": "duplicate_periods",
+                "message": (
+                    f"{len(duplicates)} file(s) match a period that already has data for this client. "
+                    "Uploading will add to the existing data, not replace it, unless you clear it first."
+                ),
+                "duplicates": duplicates
+            })
 
-        client_db.save_invoice_documents(client_id, label, [_doc_to_row(d) for d in docs])
-        saved_files.append(filename)
+    # Parse each upload in-memory and persist only the EXTRACTED documents - the raw
+    # JSON/zip bytes are never written to disk. Each file's return type (sales GSTR-1
+    # vs purchases GSTR-2B) is auto-detected independently, so one batch can mix both.
+    detected_types: Dict[str, str] = {}
+    cleared_types = set()
+    for filename, payload, file_return_type, label in parsed_files:
+        detected_types[filename] = file_return_type
 
-    # Reload dataset for this client only
-    store.is_loaded = False
-    totals = reload_dataset(client_id)
+        # If user selected to clear existing return data, clear each detected type once
+        if clear_existing and file_return_type not in cleared_types:
+            client_db.clear_client_documents(client_id, file_return_type)
+            cleared_types.add(file_return_type)
+
+        if _ingest_return_payload(client_id, filename, payload, client_gstin):
+            saved_files.append(filename)
+
+    # Reload both datasets for this client - a batch may have touched either or both
+    _reload_both(client_id)
     active_cl = client_db.get_client(client_id) if client_id else None
 
     return {
         "status": "success",
         "active_client": active_cl,
         "uploaded_files": saved_files,
-        "new_totals": totals
+        "detected_types": detected_types,
+        "new_totals": {
+            "GSTR1": store.get("GSTR1").financial_totals,
+            "GSTR2B": store.get("GSTR2B").financial_totals
+        }
     }
+
+DEFAULT_TALLY_ENDPOINT = "http://127.0.0.1:9000"
+
+def _cancel_vouchers_in_tally(vouchers: List[Dict[str, Any]], endpoint: str = DEFAULT_TALLY_ENDPOINT) -> Dict[str, Any]:
+    """Best-effort: posts a Cancel request to Tally for every given voucher. Never
+    raises - deleting data from this tool must succeed even if Tally is offline or
+    the cancel is rejected; the caller just reports whether it reached Tally."""
+    if not vouchers:
+        return {"attempted": 0, "reached_tally": False}
+    import xml_engine
+    cancel_xml = xml_engine.TallyXMLEngine.generate_cancel_xml(vouchers)
+    try:
+        resp = requests.post(endpoint, data=cancel_xml.encode("utf-8"), headers={"Content-Type": "text/xml"}, timeout=30)
+        return {"attempted": len(vouchers), "reached_tally": True, "status_code": resp.status_code}
+    except requests.exceptions.RequestException as e:
+        return {"attempted": len(vouchers), "reached_tally": False, "error": str(e)}
 
 @app.delete("/api/clients/{client_id}/periods/{period_label}")
 @app.post("/api/clients/{client_id}/periods/{period_label}/delete")
-def delete_client_return_period(client_id: int, period_label: str):
-    """Deletes one stored return period for a client and reloads the dataset."""
+def delete_client_return_period(client_id: int, period_label: str, return_type: str = "GSTR1", tally_endpoint: str = DEFAULT_TALLY_ENDPOINT):
+    """Deletes one stored return period (sales or purchases) for a client, cancels
+    any vouchers this tool previously pushed to Tally for that period, and
+    regenerates that return type's XML."""
+    return_type = (return_type or "GSTR1").upper()
     cl = client_db.get_client(client_id)
     if not cl:
         raise HTTPException(status_code=404, detail="Client not found.")
 
     clean_target = period_label.strip()
-    deleted = client_db.delete_period_documents(client_id, clean_target)
+    pushed = client_db.get_pushed_vouchers_for_period(client_id, return_type, clean_target)
+    cancel_result = _cancel_vouchers_in_tally(pushed, tally_endpoint)
+
+    deleted = client_db.delete_period_documents(client_id, clean_target, return_type)
+    client_db.delete_pushed_vouchers_for_period(client_id, return_type, clean_target)
 
     if deleted:
-        store.is_loaded = False
-        reload_dataset(client_id)
-        if store.documents:
-            generate_xml(store.name_preference)
+        reload_dataset(client_id, return_type)
+        rstore = store.get(return_type)
+        masters_path, entries_path = _xml_filenames(return_type)
+        if rstore.documents:
+            generate_xml(store.name_preference, return_type)
         else:
-            (OUTPUT_DIR / "Consolidated_Masters.xml").unlink(missing_ok=True)
-            (OUTPUT_DIR / "Consolidated_Entries.xml").unlink(missing_ok=True)
-        return {"status": "success", "message": f"Period '{period_label}' deleted successfully."}
+            masters_path.unlink(missing_ok=True)
+            entries_path.unlink(missing_ok=True)
+
+        message = f"Period '{period_label}' deleted successfully."
+        if cancel_result["attempted"]:
+            message += (
+                f" Cancelled {cancel_result['attempted']} voucher(s) in Tally."
+                if cancel_result["reached_tally"]
+                else f" Could not reach Tally to cancel {cancel_result['attempted']} previously-pushed voucher(s) - cancel them manually if needed."
+            )
+        return {"status": "success", "message": message, "tally_cancel": cancel_result}
     raise HTTPException(status_code=404, detail=f"Period '{period_label}' not found.")
 
 @app.delete("/api/clients/{client_id}/clear-returns")
 @app.post("/api/clients/{client_id}/clear-returns")
-def clear_client_returns(client_id: int):
-    """Clears all stored return data for a client."""
-    client_db.clear_client_documents(client_id)
+def clear_client_returns(client_id: int, return_type: str = "GSTR1", tally_endpoint: str = DEFAULT_TALLY_ENDPOINT):
+    """Clears all stored return data (sales or purchases) for a client, cancelling
+    any vouchers this tool previously pushed to Tally for it."""
+    return_type = (return_type or "GSTR1").upper()
 
-    store.is_loaded = False
-    reload_dataset(client_id)
-    (OUTPUT_DIR / "Consolidated_Masters.xml").unlink(missing_ok=True)
-    (OUTPUT_DIR / "Consolidated_Entries.xml").unlink(missing_ok=True)
-    return {"status": "success", "message": "All return data cleared for client."}
+    pushed = client_db.get_pushed_vouchers_for_client(client_id, return_type)
+    cancel_result = _cancel_vouchers_in_tally(pushed, tally_endpoint)
+
+    client_db.clear_client_documents(client_id, return_type)
+    client_db.delete_pushed_vouchers_for_client(client_id, return_type)
+
+    reload_dataset(client_id, return_type)
+    masters_path, entries_path = _xml_filenames(return_type)
+    masters_path.unlink(missing_ok=True)
+    entries_path.unlink(missing_ok=True)
+
+    message = "All return data cleared for client."
+    if cancel_result["attempted"]:
+        message += (
+            f" Cancelled {cancel_result['attempted']} voucher(s) in Tally."
+            if cancel_result["reached_tally"]
+            else f" Could not reach Tally to cancel {cancel_result['attempted']} previously-pushed voucher(s) - cancel them manually if needed."
+        )
+    return {"status": "success", "message": message, "tally_cancel": cancel_result}
 
 # Mount static frontend
 STATIC_DIR = get_bundle_dir() / "static"

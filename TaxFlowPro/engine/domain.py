@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 
 @dataclass
 class TaxLine:
@@ -22,6 +22,18 @@ class NormalizedDocument:
     tax_lines: List[TaxLine] = field(default_factory=list)
     original_doc_num: Optional[str] = None
     original_doc_date: Optional[str] = None
+    period_label: Optional[str] = None  # which stored return period this came from -
+                                         # needed to cancel exactly this period's vouchers
+                                         # in Tally if the period is later deleted here.
+
+def is_journal_doc(doc: "NormalizedDocument") -> bool:
+    """ADVANCE* and RCM_SELF_INVOICE are synthetic Journal entries whose total_val is
+    just the tax movement being recorded, not taxable_val + tax like a real invoice -
+    the generic double-entry balance check doesn't apply to them, and they always net
+    to zero by construction. Shared by server.py (discrepancy flagging) and
+    xml_engine.py (XML generation) so the two can't silently disagree about which
+    doc types are journal-only."""
+    return doc.doc_type.startswith("ADVANCE") or doc.doc_type == "RCM_SELF_INVOICE"
 
 def format_tally_date(date_str: str) -> str:
     """Formats DD-MM-YYYY, DD/MM/YYYY, or YYYY-MM-DD into YYYYMMDD for Tally."""
@@ -72,12 +84,69 @@ def _extract_tax_lines(det: dict, is_debit: bool) -> List[TaxLine]:
         lines.append(TaxLine("IGST", rt, round(iamt, 2), is_debit=is_debit))
     return lines
 
+def _extract_2b_tax_lines(inv: dict, is_debit: bool) -> List[TaxLine]:
+    """GSTR-2B invoices/notes carry cgst/sgst/igst directly on the record (no itemized
+    rate breakdown, and no 'rt' field at all) - the per-component rate is derived from
+    each amount's ratio to the taxable value instead of being read off the JSON."""
+    txval = float(inv.get("txval", 0.0))
+    cgst = float(inv.get("cgst", 0.0))
+    sgst = float(inv.get("sgst", 0.0))
+    igst = float(inv.get("igst", 0.0))
+
+    lines = []
+    if cgst > 0:
+        rt = round(cgst / txval * 100, 2) if txval else 0.0
+        lines.append(TaxLine("CGST", rt, round(cgst, 2), is_debit=is_debit))
+    if sgst > 0:
+        rt = round(sgst / txval * 100, 2) if txval else 0.0
+        lines.append(TaxLine("SGST", rt, round(sgst, 2), is_debit=is_debit))
+    if igst > 0:
+        rt = round(igst / txval * 100, 2) if txval else 0.0
+        lines.append(TaxLine("IGST", rt, round(igst, 2), is_debit=is_debit))
+    return lines
+
+def _merge_same_invoice_documents(docs: List["NormalizedDocument"]) -> List["NormalizedDocument"]:
+    """The GST portal occasionally reports one multi-rate invoice as several separate
+    JSON entries under the same invoice number and GSTIN - one entry per rate slab -
+    instead of one entry carrying multiple line items. Left alone, each becomes its
+    own NormalizedDocument and therefore its own Tally voucher sharing the same
+    VOUCHERNUMBER + VOUCHERTYPE - Tally would then silently ALTER (overwrite) the
+    first with the second on import instead of combining them, quietly losing one
+    rate's worth of tax.
+
+    This merges any documents that share (doc_type, doc_number, party_gstin) - once
+    both the invoice number AND the GSTIN match - into a single document, combining
+    their tax lines and totals, so a multi-rate invoice always becomes exactly one
+    voucher no matter how the portal chose to split it up. Only applies where GSTIN
+    is a real identifier (registered-party sections): B2C/export/advance/RCM-journal
+    rows all use an empty party_gstin by design and must never be merged just
+    because two of them happen to share a synthetically-built document number."""
+    result: List[NormalizedDocument] = []
+    seen: Dict[Tuple[str, str, str], NormalizedDocument] = {}
+    for doc in docs:
+        if not doc.party_gstin:
+            result.append(doc)
+            continue
+        key = (doc.doc_type, doc.doc_number, doc.party_gstin)
+        existing = seen.get(key)
+        if existing:
+            existing.tax_lines.extend(doc.tax_lines)
+            existing.taxable_val = round(existing.taxable_val + doc.taxable_val, 2)
+            existing.total_val = round(existing.total_val + doc.total_val, 2)
+        else:
+            seen[key] = doc
+            result.append(doc)
+    return result
+
 class GSTDataExtractor:
     """Extracts every voucher-relevant node (standard, large/unregistered, exports, and
     advance-tax sections, plus their amendments) from raw GSTR-1 JSON payloads."""
 
     @staticmethod
     def extract_documents(raw_json: Dict[str, Any], gstr_type: str) -> List[NormalizedDocument]:
+        if gstr_type.upper() == "GSTR2B":
+            return _merge_same_invoice_documents(GSTDataExtractor._extract_gstr2b_documents(raw_json))
+
         docs = []
         is_sales = (gstr_type.upper() == "GSTR1")
 
@@ -201,7 +270,7 @@ class GSTDataExtractor:
         if is_sales and "txpda" in root:
             docs.extend(GSTDataExtractor._parse_advance_slabs(root.get("txpda", []), fp, "ADVANCE_ADJUSTMENT_AMENDED"))
 
-        return docs
+        return _merge_same_invoice_documents(docs)
 
     @staticmethod
     def _parse_invoice(inv: dict, gstin: str, party: str, doc_type: str, is_sales: bool) -> Optional[NormalizedDocument]:
@@ -331,3 +400,140 @@ class GSTDataExtractor:
                 tax_lines=tax_lines
             ))
         return docs
+
+    # -----------------------------------------------------------------------
+    # GSTR-2B (purchase-side ITC statement) - structurally different from
+    # GSTR-1: invoices carry cgst/sgst/igst flat (no itemized rate breakdown),
+    # field names differ (ntnum not nt_num, typ not ntty for notes), and three
+    # GSTR-2B-only flags change how a record should post: imsStatus (Invoice
+    # Management System action), itcavl (is ITC actually claimable), and rev
+    # (reverse charge - the supplier charged no tax, recipient self-assesses it).
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_gstr2b_documents(raw_json: Dict[str, Any]) -> List[NormalizedDocument]:
+        docs = []
+        root = unwrap_gst_payload(raw_json)
+
+        # 1. Standard B2B purchase invoices
+        for b2b in root.get("b2b", []):
+            gstin = b2b.get("ctin", "")
+            party = b2b.get("trdnm") or "Party"
+            for inv in b2b.get("inv", []):
+                docs.extend(GSTDataExtractor._parse_2b_invoice(inv, gstin, party, "B2B"))
+
+        # 2. Amended B2B purchase invoices
+        for b2ba in root.get("b2ba", []):
+            gstin = b2ba.get("ctin", "")
+            party = b2ba.get("trdnm") or "Party"
+            for inv in b2ba.get("inv", []):
+                docs.extend(GSTDataExtractor._parse_2b_invoice(inv, gstin, party, "B2BA"))
+
+        # 3. Credit & Debit Notes from registered suppliers
+        for cdnr in root.get("cdnr", []):
+            gstin = cdnr.get("ctin", "")
+            party = cdnr.get("trdnm") or "Party"
+            for note in cdnr.get("nt", []):
+                docs.extend(GSTDataExtractor._parse_2b_note(note, gstin, party))
+
+        return docs
+
+    @staticmethod
+    def _parse_2b_invoice(inv: dict, gstin: str, party: str, doc_type: str) -> List[NormalizedDocument]:
+        """Returns 0, 1, or 2 documents for one GSTR-2B invoice line:
+        - Rejected via IMS -> nothing, it isn't a valid purchase.
+        - Reverse charge -> a plain purchase at taxable value (supplier charged no tax)
+          plus a separate RCM self-invoice journal recognizing the self-assessed tax.
+        - ITC not available -> a single purchase voucher for the FULL invoice value
+          (tax folded into cost, since it isn't recoverable).
+        - Otherwise -> a standard purchase voucher with claimable Input Tax lines."""
+        if (inv.get("imsStatus") or "").upper() == "R":
+            return []
+
+        num = inv.get("inum")
+        dt = format_tally_date(inv.get("dt") or "")
+        val = round(float(inv.get("val", 0.0)), 2)
+        if val == 0:
+            return []
+
+        txval = round(float(inv.get("txval", 0.0)), 2)
+        is_rcm = (inv.get("rev") or "").upper() == "Y"
+        itc_available = (inv.get("itcavl") or "").upper() != "N"
+
+        results = []
+
+        if is_rcm:
+            purchase = NormalizedDocument(
+                doc_type=f"{doc_type}_RCM", doc_number=num, doc_date=dt,
+                party_gstin=gstin, party_name=party,
+                total_val=txval, taxable_val=txval, tax_lines=[]
+            )
+            results.append(purchase)
+            rcm_tax_lines = _extract_2b_tax_lines(inv, is_debit=True)
+            if rcm_tax_lines:
+                results.append(NormalizedDocument(
+                    doc_type="RCM_SELF_INVOICE", doc_number=num, doc_date=dt,
+                    party_gstin="", party_name="RCM Tax Self-Assessment",
+                    total_val=round(sum(t.amount for t in rcm_tax_lines), 2),
+                    taxable_val=txval, tax_lines=rcm_tax_lines
+                ))
+        elif not itc_available:
+            results.append(NormalizedDocument(
+                doc_type=f"{doc_type}_INELIGIBLE", doc_number=num, doc_date=dt,
+                party_gstin=gstin, party_name=party,
+                total_val=val, taxable_val=val, tax_lines=[]
+            ))
+        else:
+            tax_lines = _extract_2b_tax_lines(inv, is_debit=True)
+            results.append(NormalizedDocument(
+                doc_type=doc_type, doc_number=num, doc_date=dt,
+                party_gstin=gstin, party_name=party,
+                total_val=val, taxable_val=txval, tax_lines=tax_lines
+            ))
+
+        if doc_type == "B2BA" and inv.get("oinum"):
+            for doc in results:
+                doc.original_doc_num = inv.get("oinum")
+                doc.original_doc_date = format_tally_date(inv.get("oidt"))
+
+        return results
+
+    @staticmethod
+    def _parse_2b_note(note: dict, gstin: str, party: str) -> List[NormalizedDocument]:
+        """Purchase-side credit/debit note. A credit note reduces the purchase and
+        reverses (debits) the ITC already claimed on the original invoice; a debit
+        note increases both. Reverse-charge and ITC-ineligible notes fold their tax
+        into the note value instead of touching an Input Tax ledger, matching how
+        the originating invoice would have been posted."""
+        if (note.get("imsStatus") or "").upper() == "R":
+            return []
+
+        num = note.get("ntnum")
+        dt = format_tally_date(note.get("dt") or "")
+        val = round(float(note.get("val", 0.0)), 2)
+        if val == 0:
+            return []
+
+        note_type = (note.get("typ") or "C").upper()  # C = Credit, D = Debit
+        doc_type = "CDNR_CREDIT" if note_type == "C" else "CDNR_DEBIT"
+        # Purchase-side: a credit note reverses (credits) previously-claimed ITC; a debit
+        # note increases (debits) it - opposite of the sales-side convention.
+        tax_is_debit = (note_type == "D")
+
+        is_rcm = (note.get("rev") or "").upper() == "Y"
+        itc_available = (note.get("itcavl") or "").upper() != "N"
+
+        if is_rcm or not itc_available:
+            return [NormalizedDocument(
+                doc_type=doc_type, doc_number=num, doc_date=dt,
+                party_gstin=gstin, party_name=party,
+                total_val=val, taxable_val=val, tax_lines=[]
+            )]
+
+        txval = round(float(note.get("txval", 0.0)), 2)
+        tax_lines = _extract_2b_tax_lines(note, is_debit=tax_is_debit)
+        return [NormalizedDocument(
+            doc_type=doc_type, doc_number=num, doc_date=dt,
+            party_gstin=gstin, party_name=party,
+            total_val=val, taxable_val=txval, tax_lines=tax_lines
+        )]

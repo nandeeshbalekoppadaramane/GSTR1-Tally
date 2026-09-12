@@ -78,18 +78,21 @@ def init_client_db():
             notes TEXT,
             gst_username TEXT,
             gst_password TEXT,
+            financial_year TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """)
 
-        # Migration: Ensure gst_username & gst_password exist on clients table
+        # Migration: Ensure gst_username, gst_password & financial_year exist on clients table
         c.execute("PRAGMA table_info(clients)")
         existing_cl_cols = {row[1] for row in c.fetchall()}
         if "gst_username" not in existing_cl_cols:
             c.execute("ALTER TABLE clients ADD COLUMN gst_username TEXT")
         if "gst_password" not in existing_cl_cols:
             c.execute("ALTER TABLE clients ADD COLUMN gst_password TEXT")
+        if "financial_year" not in existing_cl_cols:
+            c.execute("ALTER TABLE clients ADD COLUMN financial_year TEXT")
 
         # 2. Client Return Periods Table
         c.execute("""
@@ -98,6 +101,7 @@ def init_client_db():
             client_id INTEGER NOT NULL,
             financial_year TEXT NOT NULL,
             return_period TEXT NOT NULL,
+            return_type TEXT NOT NULL DEFAULT 'GSTR1',
             doc_count INTEGER DEFAULT 0,
             b2b_count INTEGER DEFAULT 0,
             b2c_count INTEGER DEFAULT 0,
@@ -112,9 +116,54 @@ def init_client_db():
             status TEXT DEFAULT 'Imported',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE,
-            UNIQUE(client_id, return_period)
+            UNIQUE(client_id, return_period, return_type)
         )
         """)
+
+        # Migration: a GSTR-1 (sales) and GSTR-2B (purchases) period can share the same
+        # label (e.g. "042025") for the same client, so the old UNIQUE(client_id,
+        # return_period) constraint - with no return_type - would silently collide them.
+        # SQLite can't alter a UNIQUE constraint in place, so rebuild the table when found.
+        c.execute("PRAGMA table_info(client_return_periods)")
+        crp_cols = [row[1] for row in c.fetchall()]
+        if "return_type" not in crp_cols:
+            c.execute("ALTER TABLE client_return_periods RENAME TO client_return_periods_old")
+            c.execute("""
+            CREATE TABLE client_return_periods (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_id INTEGER NOT NULL,
+                financial_year TEXT NOT NULL,
+                return_period TEXT NOT NULL,
+                return_type TEXT NOT NULL DEFAULT 'GSTR1',
+                doc_count INTEGER DEFAULT 0,
+                b2b_count INTEGER DEFAULT 0,
+                b2c_count INTEGER DEFAULT 0,
+                cdnr_count INTEGER DEFAULT 0,
+                parties_count INTEGER DEFAULT 0,
+                taxable_val REAL DEFAULT 0.0,
+                cgst_val REAL DEFAULT 0.0,
+                sgst_val REAL DEFAULT 0.0,
+                igst_val REAL DEFAULT 0.0,
+                total_val REAL DEFAULT 0.0,
+                file_path TEXT,
+                status TEXT DEFAULT 'Imported',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE,
+                UNIQUE(client_id, return_period, return_type)
+            )
+            """)
+            c.execute("""
+            INSERT INTO client_return_periods (
+                id, client_id, financial_year, return_period, return_type, doc_count,
+                b2b_count, b2c_count, cdnr_count, parties_count,
+                taxable_val, cgst_val, sgst_val, igst_val, total_val, file_path, status, created_at
+            )
+            SELECT id, client_id, financial_year, return_period, 'GSTR1', doc_count,
+                b2b_count, b2c_count, cdnr_count, parties_count,
+                taxable_val, cgst_val, sgst_val, igst_val, total_val, file_path, status, created_at
+            FROM client_return_periods_old
+            """)
+            c.execute("DROP TABLE client_return_periods_old")
 
         # 3. Party Mappings (Permanent storage of verified trade and legal names against GSTIN)
         c.execute("""
@@ -169,6 +218,7 @@ def init_client_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             client_id INTEGER NOT NULL,
             period_label TEXT NOT NULL,
+            return_type TEXT NOT NULL DEFAULT 'GSTR1',
             doc_type TEXT,
             doc_number TEXT,
             doc_date TEXT,
@@ -182,8 +232,30 @@ def init_client_db():
             FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
         )
         """)
+        c.execute("PRAGMA table_info(client_invoice_documents)")
+        cid_cols = {row[1] for row in c.fetchall()}
+        if "return_type" not in cid_cols:
+            c.execute("ALTER TABLE client_invoice_documents ADD COLUMN return_type TEXT NOT NULL DEFAULT 'GSTR1'")
         c.execute("CREATE INDEX IF NOT EXISTS idx_invoice_docs_client ON client_invoice_documents(client_id)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_invoice_docs_period ON client_invoice_documents(client_id, period_label)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_invoice_docs_period ON client_invoice_documents(client_id, period_label, return_type)")
+
+        # 5. Tally Push Ledger - records every voucher successfully pushed to Tally so
+        # that deleting a period from this tool can also cancel those exact vouchers in
+        # Tally, instead of leaving them there as orphans after the source data is gone.
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS client_tally_pushes (
+            client_id INTEGER NOT NULL,
+            return_type TEXT NOT NULL DEFAULT 'GSTR1',
+            period_label TEXT NOT NULL,
+            vch_type TEXT NOT NULL,
+            vch_number TEXT NOT NULL,
+            vch_date TEXT,
+            pushed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (client_id, return_type, vch_type, vch_number),
+            FOREIGN KEY(client_id) REFERENCES clients(id) ON DELETE CASCADE
+        )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_tally_pushes_period ON client_tally_pushes(client_id, return_type, period_label)")
 
         conn.commit()
 
@@ -241,6 +313,8 @@ def list_clients(search: Optional[str] = None, status: Optional[str] = None) -> 
         for r in rows:
             item = dict(r)
             item["is_active_session"] = (item["id"] == _ACTIVE_CLIENT_ID)
+            item["sales_months"] = list_uploaded_months(item["id"], "GSTR1")
+            item["purchase_months"] = list_uploaded_months(item["id"], "GSTR2B")
             clients.append(item)
         return clients
 
@@ -304,8 +378,8 @@ def create_client(data: Dict[str, Any]) -> Dict[str, Any]:
             INSERT INTO clients (
                 client_code, name, trade_name, gstin, pan, state_code, state_name,
                 contact_person, email, phone, address, tally_company_name, tally_company_id,
-                default_name_preference, status, notes, gst_username, gst_password
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                default_name_preference, status, notes, gst_username, gst_password, financial_year
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 client_code,
                 name,
@@ -324,7 +398,8 @@ def create_client(data: Dict[str, Any]) -> Dict[str, Any]:
                 _clean(data.get("status"), "active").lower(),
                 _clean(data.get("notes")),
                 _clean(data.get("gst_username")),
-                _clean(data.get("gst_password"))
+                _clean(data.get("gst_password")),
+                _clean(data.get("financial_year"))
             ))
             conn.commit()
             new_id = c.lastrowid
@@ -370,6 +445,7 @@ def update_client(client_id: int, data: Dict[str, Any]) -> Dict[str, Any]:
                 notes = ?,
                 gst_username = ?,
                 gst_password = ?,
+                financial_year = ?,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """, (
@@ -390,6 +466,7 @@ def update_client(client_id: int, data: Dict[str, Any]) -> Dict[str, Any]:
                 _clean(data.get("notes", existing["notes"])),
                 _clean(data.get("gst_username", existing.get("gst_username", ""))),
                 _clean(data.get("gst_password", existing.get("gst_password", ""))),
+                _clean(data.get("financial_year", existing.get("financial_year", ""))),
                 client_id
             ))
             conn.commit()
@@ -475,32 +552,33 @@ def clear_all_db_data() -> Dict[str, int]:
     _ACTIVE_CLIENT_ID = None
     return deleted_counts
 
-def sync_return_periods_for_client(client_id: int, month_stats: List[Dict[str, Any]]):
-    """Syncs extracted monthly GSTR-1 stats into client_return_periods."""
+def sync_return_periods_for_client(client_id: int, month_stats: List[Dict[str, Any]], return_type: str = "GSTR1"):
+    """Syncs extracted monthly GSTR-1/GSTR-2B stats into client_return_periods."""
     init_client_db()
     with get_connection() as conn:
         c = conn.cursor()
         for m in month_stats:
             c.execute("""
             INSERT OR REPLACE INTO client_return_periods (
-                client_id, financial_year, return_period, doc_count,
+                client_id, financial_year, return_period, return_type, doc_count,
                 b2b_count, b2c_count, cdnr_count, parties_count,
                 taxable_val, cgst_val, sgst_val, igst_val, total_val, file_path
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 client_id,
                 "2025-26",
                 m["label"],
+                return_type,
                 m["total_docs"],
-                m["b2b_count"],
-                m["b2c_count"],
-                m["cdnr_count"],
-                m["parties_count"],
-                m["taxable_val"],
-                m["cgst_val"],
-                m["sgst_val"],
-                m["igst_val"],
-                m["total_val"],
+                m.get("b2b_count", 0),
+                m.get("b2c_count", 0),
+                m.get("cdnr_count", 0),
+                m.get("parties_count", 0),
+                m.get("taxable_val", 0),
+                m.get("cgst_val", 0),
+                m.get("sgst_val", 0),
+                m.get("igst_val", 0),
+                m.get("total_val", 0),
                 m.get("filename", "")
             ))
         conn.commit()
@@ -508,24 +586,24 @@ def sync_return_periods_for_client(client_id: int, month_stats: List[Dict[str, A
 # ---------------------------------------------------------------------------
 # Invoice Documents (persisted extraction results - replaces retaining raw JSON)
 # ---------------------------------------------------------------------------
-def save_invoice_documents(client_id: int, period_label: str, documents: List[Dict[str, Any]]):
-    """Replaces all stored documents for one client+period with the freshly extracted set."""
+def save_invoice_documents(client_id: int, period_label: str, documents: List[Dict[str, Any]], return_type: str = "GSTR1"):
+    """Replaces all stored documents for one client+period+return_type with the freshly extracted set."""
     init_client_db()
     with get_connection() as conn:
         c = conn.cursor()
         c.execute(
-            "DELETE FROM client_invoice_documents WHERE client_id = ? AND period_label = ?",
-            (client_id, period_label)
+            "DELETE FROM client_invoice_documents WHERE client_id = ? AND period_label = ? AND return_type = ?",
+            (client_id, period_label, return_type)
         )
         for doc in documents:
             c.execute("""
             INSERT INTO client_invoice_documents (
-                client_id, period_label, doc_type, doc_number, doc_date,
+                client_id, period_label, return_type, doc_type, doc_number, doc_date,
                 party_gstin, party_name, total_val, taxable_val, tax_lines_json,
                 original_doc_num, original_doc_date
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                client_id, period_label,
+                client_id, period_label, return_type,
                 doc["doc_type"], doc["doc_number"], doc["doc_date"],
                 doc["party_gstin"], doc["party_name"],
                 doc["total_val"], doc["taxable_val"],
@@ -534,14 +612,15 @@ def save_invoice_documents(client_id: int, period_label: str, documents: List[Di
             ))
         conn.commit()
 
-def get_invoice_documents(client_id: int) -> List[Dict[str, Any]]:
-    """Returns every stored document for a client, grouped implicitly by period_label."""
+def get_invoice_documents(client_id: int, return_type: str = "GSTR1") -> List[Dict[str, Any]]:
+    """Returns every stored document for a client of one return type (GSTR1=sales,
+    GSTR2B=purchases), grouped implicitly by period_label."""
     init_client_db()
     with get_connection() as conn:
         c = conn.cursor()
         c.execute(
-            "SELECT * FROM client_invoice_documents WHERE client_id = ? ORDER BY period_label",
-            (client_id,)
+            "SELECT * FROM client_invoice_documents WHERE client_id = ? AND return_type = ? ORDER BY period_label",
+            (client_id, return_type)
         )
         rows = []
         for row in c.fetchall():
@@ -554,40 +633,140 @@ def get_invoice_documents(client_id: int) -> List[Dict[str, Any]]:
             rows.append(d)
         return rows
 
-def list_invoice_periods(client_id: int) -> List[str]:
-    """Returns the distinct period labels already stored for a client."""
+def list_invoice_periods(client_id: int, return_type: str = "GSTR1") -> List[str]:
+    """Returns the distinct period labels already stored for a client's given return type."""
     init_client_db()
     with get_connection() as conn:
         c = conn.cursor()
         c.execute(
-            "SELECT DISTINCT period_label FROM client_invoice_documents WHERE client_id = ?",
-            (client_id,)
+            "SELECT DISTINCT period_label FROM client_invoice_documents WHERE client_id = ? AND return_type = ?",
+            (client_id, return_type)
         )
         return [row[0] for row in c.fetchall()]
 
-def delete_period_documents(client_id: int, period_label: str) -> bool:
-    """Deletes all documents for one client+period. Returns True if anything was deleted."""
+_MONTH_NAMES = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"
+]
+
+def list_uploaded_months(client_id: int, return_type: str = "GSTR1") -> List[str]:
+    """Returns the distinct calendar months ('April 2025', ...) actually present in a
+    client's stored documents for one return type, in chronological order. Derived
+    from each document's own doc_date (stored YYYYMMDD) rather than the raw upload
+    filename/period label, which is not reliably a clean month name."""
     init_client_db()
     with get_connection() as conn:
         c = conn.cursor()
         c.execute(
-            "DELETE FROM client_invoice_documents WHERE client_id = ? AND period_label = ?",
-            (client_id, period_label)
+            "SELECT DISTINCT doc_date FROM client_invoice_documents WHERE client_id = ? AND return_type = ?",
+            (client_id, return_type)
         )
+        year_months = set()
+        for row in c.fetchall():
+            d = str(row[0] or "")
+            if len(d) >= 6 and d[:8].isdigit():
+                year_months.add((d[:4], d[4:6]))
+
+    def _sort_key(ym):
+        year, month = ym
+        return (int(year), int(month))
+
+    return [
+        f"{_MONTH_NAMES[int(month) - 1]} {year}"
+        for year, month in sorted(year_months, key=_sort_key)
+        if 1 <= int(month) <= 12
+    ]
+
+def record_tally_pushes(client_id: int, return_type: str, vouchers: List[Dict[str, Any]]):
+    """Records every voucher just pushed to Tally, keyed by (client, return_type,
+    vch_type, vch_number) - a repeat push of the same voucher just overwrites its own
+    record rather than accumulating duplicates."""
+    if not vouchers:
+        return
+    init_client_db()
+    with get_connection() as conn:
+        c = conn.cursor()
+        for v in vouchers:
+            c.execute("""
+            INSERT OR REPLACE INTO client_tally_pushes (
+                client_id, return_type, period_label, vch_type, vch_number, vch_date, pushed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """, (client_id, return_type, v["period_label"], v["vch_type"], v["vch_number"], v.get("vch_date")))
+        conn.commit()
+
+def get_pushed_vouchers_for_period(client_id: int, return_type: str, period_label: str) -> List[Dict[str, Any]]:
+    """Vouchers previously pushed to Tally for one period - used to cancel exactly
+    those vouchers in Tally when the period is deleted from this tool."""
+    init_client_db()
+    with get_connection() as conn:
+        c = conn.cursor()
         c.execute(
-            "DELETE FROM client_return_periods WHERE client_id = ? AND return_period = ?",
-            (client_id, period_label)
+            "SELECT vch_type, vch_number, vch_date FROM client_tally_pushes "
+            "WHERE client_id = ? AND return_type = ? AND period_label = ?",
+            (client_id, return_type, period_label)
+        )
+        return [dict(row) for row in c.fetchall()]
+
+def get_pushed_vouchers_for_client(client_id: int, return_type: str) -> List[Dict[str, Any]]:
+    """All vouchers previously pushed to Tally for a client's given return type -
+    used to cancel everything in Tally when all return data is cleared."""
+    init_client_db()
+    with get_connection() as conn:
+        c = conn.cursor()
+        c.execute(
+            "SELECT vch_type, vch_number, vch_date FROM client_tally_pushes "
+            "WHERE client_id = ? AND return_type = ?",
+            (client_id, return_type)
+        )
+        return [dict(row) for row in c.fetchall()]
+
+def delete_pushed_vouchers_for_period(client_id: int, return_type: str, period_label: str):
+    init_client_db()
+    with get_connection() as conn:
+        c = conn.cursor()
+        c.execute(
+            "DELETE FROM client_tally_pushes WHERE client_id = ? AND return_type = ? AND period_label = ?",
+            (client_id, return_type, period_label)
         )
         conn.commit()
-        return c.rowcount > 0
 
-def clear_client_documents(client_id: int):
-    """Deletes all stored documents and return-period records for a client."""
+def delete_pushed_vouchers_for_client(client_id: int, return_type: str):
     init_client_db()
     with get_connection() as conn:
         c = conn.cursor()
-        c.execute("DELETE FROM client_invoice_documents WHERE client_id = ?", (client_id,))
-        c.execute("DELETE FROM client_return_periods WHERE client_id = ?", (client_id,))
+        c.execute(
+            "DELETE FROM client_tally_pushes WHERE client_id = ? AND return_type = ?",
+            (client_id, return_type)
+        )
+        conn.commit()
+
+def delete_period_documents(client_id: int, period_label: str, return_type: str = "GSTR1") -> bool:
+    """Deletes all documents for one client+period+return_type. Returns True if the
+    authoritative document store (client_invoice_documents) actually had rows removed -
+    not whether client_return_periods (a secondary stats mirror that can fall out of
+    sync with it) did, which would wrongly report "not found" for real, deletable data."""
+    init_client_db()
+    with get_connection() as conn:
+        c = conn.cursor()
+        c.execute(
+            "DELETE FROM client_invoice_documents WHERE client_id = ? AND period_label = ? AND return_type = ?",
+            (client_id, period_label, return_type)
+        )
+        docs_deleted = c.rowcount > 0
+        c.execute(
+            "DELETE FROM client_return_periods WHERE client_id = ? AND return_period = ? AND return_type = ?",
+            (client_id, period_label, return_type)
+        )
+        conn.commit()
+        return docs_deleted
+
+def clear_client_documents(client_id: int, return_type: str = "GSTR1"):
+    """Deletes all stored documents and return-period records for a client's given return type."""
+    init_client_db()
+    with get_connection() as conn:
+        c = conn.cursor()
+        c.execute("DELETE FROM client_invoice_documents WHERE client_id = ? AND return_type = ?", (client_id, return_type))
+        c.execute("DELETE FROM client_return_periods WHERE client_id = ? AND return_type = ?", (client_id, return_type))
         conn.commit()
 
 # ---------------------------------------------------------------------------

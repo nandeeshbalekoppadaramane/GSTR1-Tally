@@ -1,63 +1,121 @@
 /* ==========================================================================
-   TaxFlow Pro — Design tokens
-   A ledger-inspired system: ink navy for structure, a single stamp-teal
-   accent for interaction/trust, and color used only where it carries real
-   financial meaning (revenue vs. tax obligation) rather than decoratively.
+   TaxFlow Pro — Design System & Tokens (Elevated Fintech / ERP Edition)
+   Crafted for accounting professionals: crisp typography, structured financial
+   elevation, robust tabular data alignment, and purposeful semantic color.
    ========================================================================== */
+
 :root {
-  /* Ink (text & structure) */
-  --ink-900: #0b1220;
-  --ink-700: #33415a;
+  /* Surface hierarchy */
+  --bg-page: #f8fafc;
+  --bg-surface: #ffffff;
+  --bg-surface-subtle: #f1f5f9;
+  --bg-surface-inset: #e2e8f0;
+
+  /* Ink & Typography tokens */
+  --ink-950: #090d16;
+  --ink-900: #0f172a;
+  --ink-800: #1e293b;
+  --ink-700: #334155;
+  --ink-600: #475569;
   --ink-500: #64748b;
-  --ink-300: #94a3b8;
+  --ink-400: #94a3b8;
+  --ink-300: #cbd5e1;
+  --ink-200: #e2e8f0;
+  --ink-100: #f1f5f9;
 
-  /* Brand / interaction — deep "stamp" teal, evokes an official verified seal
-     rather than a generic SaaS sky-blue */
-  --primary-navy: #0b1220;
-  --secondary-navy: #16223c;
-  --teal: #0f8a7a;
-  --teal-dark: #0b6a5d;
-  --teal-light: #e3f5f2;
-  --teal-subtle: #f2fbfa;
+  /* Brand / Deep Navy Suite */
+  --primary-navy: #0b1329;
+  --secondary-navy: #15223f;
+  --navy-border: #1e3056;
 
-  /* Meaning colors — used only for financial semantics, not per-card decoration */
-  --revenue: #0f8a7a;
-  --revenue-subtle: #e3f5f2;
-  --tax: #b3690a;
-  --tax-subtle: #fbeed9;
-  --debit: #b3261e;
-  --debit-subtle: #fbe8e7;
+  /* Interactive / Verified Stamp Teal */
+  --teal: #0d7f70;
+  --teal-hover: #0a6559;
+  --teal-dark: #085047;
+  --teal-light: #e0f2ef;
+  --teal-subtle: #f0fdfa;
+  --teal-border: #99d5cb;
+  --teal-glow: rgba(13, 127, 112, 0.15);
 
-  --bg-page: #f6f7f9;
-  --card-border: #e4e7ec;
+  /* Semantic Financial Accents */
+  --revenue: #0d7f70;
+  --revenue-bg: #e6f6f4;
+  --revenue-border: #a4dcce;
+  --revenue-subtle: #e6f6f4;
 
-  --font-display: "Manrope", -apple-system, "Segoe UI", sans-serif;
-  --font-body: "Inter", -apple-system, "Segoe UI", Roboto, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --tax: #b45309;
+  --tax-bg: #fef3c7;
+  --tax-border: #fde68a;
+  --tax-subtle: #fef3c7;
+
+  --debit: #b91c1c;
+  --debit-bg: #fee2e2;
+  --debit-border: #fecaca;
+
+  --info-accent: #1d4ed8;
+  --info-bg: #eff6ff;
+  --info-border: #bfdbfe;
+
+  /* Structural Borders & Shadows */
+  --card-border: #e2e8f0;
+  --card-border-subtle: #f1f5f9;
+  --card-shadow-sm: 0 1px 2px 0 rgba(15, 23, 42, 0.04), 0 1px 1px -1px rgba(15, 23, 42, 0.02);
+  --card-shadow: 0 4px 6px -1px rgba(15, 23, 42, 0.05), 0 2px 4px -2px rgba(15, 23, 42, 0.03);
+  --card-shadow-lg: 0 10px 15px -3px rgba(15, 23, 42, 0.07), 0 4px 6px -4px rgba(15, 23, 42, 0.04);
+
+  /* Fonts - the OS's own native UI font, not a downloaded web font. Segoe UI is
+     Windows' own "Sans" system font (this is a Windows desktop app); Arial is the
+     universal fallback if that's ever unavailable. One consistent stack for
+     headings and body reads as an ordinary native app, not a themed template. */
+  --font-display: "Segoe UI", Arial, -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+  --font-body: "Segoe UI", Arial, -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+  --font-mono: Consolas, "Liberation Mono", Menlo, "Courier New", monospace;
 }
 
+/* Base resets & layout */
 body {
   background-color: var(--bg-page);
   font-family: var(--font-body);
-  color: var(--ink-900);
+  color: var(--ink-800);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
+/* Typography Hierarchy */
 h1, h2, h3, h4, h5, h6,
-.navbar-brand, .nav-link, .btn, .metric-val,
-.client-card h5, .card-header, .modal-title {
+.navbar-brand, .card-header, .modal-title {
   font-family: var(--font-display);
+  color: var(--ink-900);
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 
-/* Financial figures, GSTINs, and invoice/document numbers get the mono
-   treatment throughout — tabular precision is the actual subject matter. */
-.font-mono, .metric-val, code {
+.font-mono, .metric-val, code, kbd {
   font-family: var(--font-mono) !important;
-  font-variant-numeric: tabular-nums;
+  font-variant-numeric: tabular-nums lining-nums;
+  letter-spacing: -0.01em;
 }
 
-.bg-dark-navy,
-.bg-navy {
+/* The heading rule above assumes h1-h6/.card-header/.modal-title sit on light
+   surfaces and gives them dark ink - this app's dark-navy card and modal headers
+   carry their own .text-white, but that ancestor color was being overridden right
+   back to dark ink by the more specific element rule on the heading itself. */
+.card-header.text-white,
+.card-header.text-white h1, .card-header.text-white h2, .card-header.text-white h3,
+.card-header.text-white h4, .card-header.text-white h5, .card-header.text-white h6,
+.modal-header.text-white .modal-title,
+.modal-title.text-white {
+  color: #ffffff !important;
+}
+
+/* Utilities */
+.bg-dark-navy {
   background-color: var(--primary-navy) !important;
+}
+
+.bg-navy {
+  background-color: var(--secondary-navy) !important;
 }
 
 .text-teal {
@@ -70,7 +128,7 @@ h1, h2, h3, h4, h5, h6,
 
 .bg-teal {
   background-color: var(--teal) !important;
-  color: #fff !important;
+  color: #ffffff !important;
 }
 
 .bg-teal-subtle {
@@ -78,43 +136,46 @@ h1, h2, h3, h4, h5, h6,
 }
 
 .border-teal-light {
-  border-color: #bfe6e0 !important;
+  border-color: var(--teal-border) !important;
 }
 
-.btn-teal {
-  background-color: var(--teal);
-  color: #fff;
-  border: none;
-}
-.btn-teal:hover {
-  background-color: var(--teal-dark);
-  color: #fff;
+/* ==========================================================================
+   Top Header Bar & Navigation Chrome
+   ========================================================================== */
+.navbar.bg-dark-navy {
+  background: linear-gradient(180deg, #0d1730 0%, #080e1e 100%) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 4px 12px rgba(8, 14, 30, 0.35);
+  padding: 0.65rem 1rem;
 }
 
-/* Brand Icon */
+/* The shared heading rule above sets .navbar-brand to dark ink for headings that
+   sit on light surfaces - the navbar itself is dark, so its brand text needs its
+   own override or "TaxFlow" renders as dark text on a dark background. */
+.navbar-brand {
+  color: #ffffff !important;
+}
+
 .brand-icon {
-  width: 34px;
-  height: 34px;
-  background: rgba(15, 138, 122, 0.22);
-  color: #4fd9c4;
+  width: 36px;
+  height: 36px;
+  background: linear-gradient(135deg, rgba(13, 127, 112, 0.35), rgba(79, 217, 196, 0.15));
+  border: 1px solid rgba(79, 217, 196, 0.3);
+  color: #38efd2;
   border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 1.1rem;
+  box-shadow: 0 2px 6px rgba(13, 127, 112, 0.25);
 }
 
+.navbar-brand .tracking-tight,
 .navbar-brand .fw-bold {
   font-family: var(--font-display);
   font-weight: 800;
-  letter-spacing: -0.02em;
-}
-
-/* Ledger rule — a thin double line under the top bar, a quiet nod to a
-   ruled ledger page's top margin. This is the app's one signature detail. */
-.navbar.bg-dark-navy {
-  border-bottom: 1px solid rgba(79, 217, 196, 0.35);
-  box-shadow: 0 2px 0 0 rgba(11, 18, 32, 0.06);
+  letter-spacing: -0.03em;
+  font-size: 1.15rem;
 }
 
 .version-badge {
@@ -124,249 +185,420 @@ h1, h2, h3, h4, h5, h6,
   background-color: var(--secondary-navy) !important;
 }
 
-/* Status Pill */
+/* System Status Pill (Tally Connection) */
 .status-pill {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 20px;
-  padding: 4px 12px;
-  font-size: 0.8rem;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 0.78rem;
+  font-weight: 500;
   color: #e2e8f0;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.18s ease;
+  user-select: none;
 }
+
 .status-pill:hover {
-  background: rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.22);
 }
+
 .status-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   display: inline-block;
+  position: relative;
 }
+
 .status-online .status-dot {
-  background-color: #1a9c6f;
-  box-shadow: 0 0 8px #1a9c6f;
+  background-color: #10b981;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.2);
 }
+
 .status-offline .status-dot {
-  background-color: var(--tax);
+  background-color: #f59e0b;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.2);
 }
+
 .status-checking .status-dot {
-  background-color: var(--ink-300);
+  background-color: #94a3b8;
+  animation: pulse-checking 1.4s infinite ease-in-out;
+}
+
+@keyframes pulse-checking {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
 }
 
 /* ==========================================================================
-   KPI Metric Cards
-   Color carries meaning, not decoration: neutral ink for counts, teal for
-   revenue-side figures, amber for tax obligation. One unified icon
-   treatment instead of five different pastel chips.
+   Scope Header & Segmented Switches
    ========================================================================== */
-.metric-card {
-  border-radius: 10px;
-  border-left: 3px solid var(--card-border) !important;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+#kpiMetricsHeader {
   background: #ffffff;
   border: 1px solid var(--card-border);
+  border-radius: 8px;
+  padding: 0.5rem 0.85rem;
+  box-shadow: var(--card-shadow-sm);
 }
+
+/* Segmented pill group */
+.btn-group-sm .btn-check + .btn-outline-teal {
+  color: var(--ink-700);
+  border: 1px solid var(--card-border);
+  background: #ffffff;
+  font-weight: 600;
+  font-size: 0.78rem;
+  padding: 0.35rem 0.85rem;
+  transition: all 0.15s ease;
+}
+
+.btn-group-sm .btn-check + .btn-outline-teal:hover {
+  background: var(--ink-100);
+  color: var(--ink-900);
+}
+
+.btn-group-sm .btn-check:checked + .btn-outline-teal {
+  background: var(--teal) !important;
+  color: #ffffff !important;
+  border-color: var(--teal) !important;
+  box-shadow: 0 2px 4px rgba(13, 127, 112, 0.25);
+}
+
+/* Sales/Purchases return-type toggle - covers any btn-check group not wrapped
+   in .btn-group-sm too, so behavior matches everywhere it appears. */
+.btn-check:checked + .btn-outline-teal {
+  background: var(--teal) !important;
+  color: #ffffff !important;
+  border-color: var(--teal) !important;
+}
+
+/* General Buttons */
+.btn {
+  font-family: var(--font-body);
+  font-weight: 600;
+  border-radius: 6px;
+  letter-spacing: -0.01em;
+  transition: all 0.15s ease;
+}
+
+.btn-sm {
+  font-size: 0.8rem;
+  padding: 0.35rem 0.75rem;
+}
+
+.btn-teal {
+  background-color: var(--teal);
+  color: #ffffff;
+  border: 1px solid var(--teal);
+}
+
+.btn-teal:hover {
+  background-color: var(--teal-hover);
+  border-color: var(--teal-hover);
+  color: #ffffff;
+  box-shadow: 0 2px 6px rgba(13, 127, 112, 0.3);
+}
+
+.btn-outline-teal {
+  color: var(--teal);
+  border: 1px solid var(--teal);
+  background: #ffffff;
+}
+
+.btn-outline-teal:hover {
+  background: var(--teal);
+  color: #ffffff;
+}
+
+/* ==========================================================================
+   KPI Metrics Strip
+   ========================================================================== */
+.metric-card {
+  border-radius: 8px;
+  background: #ffffff;
+  border: 1px solid var(--card-border);
+  box-shadow: var(--card-shadow-sm);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  position: relative;
+  overflow: hidden;
+}
+
 .metric-card:hover {
   transform: translateY(-2px);
-  box-shadow: 0 8px 16px rgba(11, 18, 32, 0.05) !important;
+  box-shadow: var(--card-shadow);
+  border-color: var(--ink-300);
 }
-.metric-card--neutral { border-left-color: var(--ink-700) !important; }
-.metric-card--revenue { border-left-color: var(--revenue) !important; }
-.metric-card--tax { border-left-color: var(--tax) !important; }
 
-.metric-card--neutral .metric-icon-box { background: #eef1f5; color: var(--ink-700); }
-.metric-card--revenue .metric-icon-box { background: var(--revenue-subtle); color: var(--revenue); }
-.metric-card--tax .metric-icon-box { background: var(--tax-subtle); color: var(--tax); }
+.metric-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 4px;
+}
 
-/* The label+value block must be allowed to shrink and wrap - without this,
-   flexbox treats an unbreakable string like "₹6,83,07,158.00" as having
-   no wrap point and lets it overflow straight past the card into the icon. */
+.metric-card--neutral::before {
+  background-color: var(--ink-500);
+}
+
+.metric-card--revenue::before {
+  background-color: var(--revenue);
+}
+
+.metric-card--tax::before {
+  background-color: var(--tax);
+}
+
+.metric-card .card-body {
+  padding: 1rem 1.15rem;
+}
+
 .metric-card .card-body > .d-flex {
   align-items: flex-start;
 }
+
 .metric-card .card-body > .d-flex > div:first-child {
   min-width: 0;
   flex: 1 1 auto;
-  padding-right: 10px;
+  padding-right: 8px;
 }
+
 .metric-label {
-  font-size: 0.72rem;
+  font-size: 0.69rem;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.05em;
   font-weight: 700;
   color: var(--ink-500);
-  margin-bottom: 2px;
+  margin-bottom: 4px;
 }
+
 .metric-val {
-  font-size: clamp(1rem, 1.5vw, 1.3rem);
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  font-size: clamp(1.15rem, 1.4vw, 1.35rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
   line-height: 1.25;
   color: var(--ink-900);
   overflow-wrap: anywhere;
 }
+
 .metric-sub {
   font-size: 0.72rem;
-  color: var(--ink-300);
-  margin-top: 3px;
+  color: var(--ink-500);
+  margin-top: 4px;
   font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
+
 .metric-icon-box {
-  width: 42px;
-  height: 42px;
-  border-radius: 9px;
+  width: 38px;
+  height: 38px;
+  border-radius: 7px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 1.15rem;
+  font-size: 1.05rem;
   flex-shrink: 0;
 }
 
-/* Compact ticker mode — collapses the KPI strip to a single slim row so
-   switching to Counterparties / Transactions / Tally Export doesn't force
-   a scroll past a full bank of cards just to reach the tab's content. */
+.metric-card--neutral .metric-icon-box {
+  background: var(--ink-100);
+  color: var(--ink-700);
+}
+
+.metric-card--revenue .metric-icon-box {
+  background: var(--revenue-bg);
+  color: var(--revenue);
+}
+
+.metric-card--tax .metric-icon-box {
+  background: var(--tax-bg);
+  color: var(--tax);
+}
+
+/* Compact Ledger Ticker Mode */
 #kpiMetricsStrip.kpi-compact {
   display: flex;
   flex-wrap: wrap;
   row-gap: 4px;
   align-items: stretch;
-  background: #fff;
+  background: #ffffff;
   border: 1px solid var(--card-border);
-  border-radius: 10px;
+  border-radius: 8px;
   padding: 2px 4px;
+  box-shadow: var(--card-shadow-sm);
 }
+
 #kpiMetricsStrip.kpi-compact > [class*="col-"] {
-  flex: 0 0 auto;
+  flex: 1 1 0;
+  min-width: 170px;
   width: auto;
   max-width: none;
   padding: 0;
   border-right: 1px solid var(--card-border);
 }
+
 #kpiMetricsStrip.kpi-compact > [class*="col-"]:last-child {
   border-right: none;
 }
+
 #kpiMetricsStrip.kpi-compact .card {
   border: none !important;
   box-shadow: none !important;
   border-radius: 0;
   background: transparent;
 }
-#kpiMetricsStrip.kpi-compact .card:hover { transform: none; }
-#kpiMetricsStrip.kpi-compact .card-body { padding: 0.55rem 1rem !important; }
+
+#kpiMetricsStrip.kpi-compact .card::before {
+  display: none;
+}
+
+#kpiMetricsStrip.kpi-compact .card:hover {
+  transform: none;
+  background: var(--ink-100);
+}
+
+#kpiMetricsStrip.kpi-compact .card-body {
+  padding: 0.45rem 0.85rem !important;
+}
+
 #kpiMetricsStrip.kpi-compact .metric-icon-box,
 #kpiMetricsStrip.kpi-compact .metric-sub {
   display: none;
 }
+
 #kpiMetricsStrip.kpi-compact .metric-label {
   font-size: 0.62rem;
   margin-bottom: 1px;
 }
+
 #kpiMetricsStrip.kpi-compact .metric-val {
   font-size: 0.95rem;
+  font-weight: 600;
 }
 
-/* Custom Tabs */
+/* ==========================================================================
+   Navigation Tabs
+   ========================================================================== */
+.card-header.bg-white {
+  background: #ffffff !important;
+  border-bottom: 1px solid var(--card-border);
+  padding: 0.25rem 1.25rem 0 1.25rem;
+}
+
+.custom-tabs {
+  border-bottom: none;
+  gap: 4px;
+}
+
+.custom-tabs .nav-item {
+  margin-bottom: -1px;
+}
+
 .custom-tabs .nav-link {
-  color: var(--ink-500);
+  color: var(--ink-600);
   font-weight: 600;
-  font-size: 0.9rem;
+  font-size: 0.84rem;
   border: none;
-  border-bottom: 3px solid transparent;
-  padding: 10px 18px;
+  border-bottom: 2px solid transparent;
+  padding: 0.75rem 1.15rem;
   border-radius: 0;
   background: transparent;
-  transition: all 0.2s ease;
-}
-.custom-tabs .nav-link:hover {
-  color: var(--teal-dark);
-}
-.custom-tabs .nav-link.active {
-  color: var(--primary-navy);
-  border-bottom-color: var(--teal);
-  background: transparent;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
 }
 
-/* Financial Tables */
-.monthly-table th {
-  font-size: 0.78rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--ink-700);
-  font-family: var(--font-display);
+.custom-tabs .nav-link:hover {
+  color: var(--ink-950);
+  border-bottom-color: var(--ink-300);
+}
+
+.custom-tabs .nav-link.active {
+  color: var(--teal-dark) !important;
   font-weight: 700;
-  white-space: nowrap;
-}
-.monthly-table td, .monthly-table th {
-  padding: 10px 14px;
-}
-.monthly-table td.font-mono {
-  white-space: nowrap;
-}
-.table-responsive {
-  overflow-x: auto;
+  border-bottom: 2px solid var(--teal) !important;
+  background: transparent;
 }
 
 /* Active Client Hero Banner */
+#activeClientHeroBanner {
+  background: #ffffff !important;
+  border: 1px solid var(--teal-border) !important;
+  border-left: 4px solid var(--teal) !important;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(13, 127, 112, 0.08);
+}
+
 .client-hero-icon {
-  width: 52px;
-  height: 52px;
-  border-radius: 12px;
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  background: var(--teal-subtle) !important;
+  color: var(--teal) !important;
+  border: 1px solid var(--teal-border);
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
-/* Client Management Cards */
+/* ==========================================================================
+   Client Management Cards
+   ========================================================================== */
 .client-card {
-  border-radius: 12px;
+  border-radius: 8px;
   border: 1px solid var(--card-border);
   background: #ffffff;
-  transition: all 0.2s ease;
+  transition: all 0.18s ease;
+  box-shadow: var(--card-shadow-sm);
+  display: flex;
+  flex-direction: column;
   position: relative;
   overflow: hidden;
 }
+
 .client-card:hover {
-  transform: translateY(-3px);
-  box-shadow: 0 10px 20px rgba(11, 18, 32, 0.06);
+  transform: translateY(-2px);
+  box-shadow: var(--card-shadow);
+  border-color: var(--ink-300);
 }
+
 .client-card.is-active-client {
-  border: 2px solid var(--teal) !important;
-  box-shadow: 0 0 16px rgba(15, 138, 122, 0.15);
+  border: 1px solid var(--teal) !important;
+  box-shadow: 0 0 0 1px var(--teal), 0 4px 12px rgba(13, 127, 112, 0.12) !important;
+  background: #ffffff;
 }
+
 .client-card.is-active-client::before {
   content: "";
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
-  height: 4px;
-  background: linear-gradient(90deg, var(--teal), #4fd9c4);
+  height: 3px;
+  background: var(--teal);
 }
 
 .copy-gstin-btn {
   cursor: pointer;
-  transition: color 0.15s ease;
+  padding: 3px 5px;
+  border-radius: 4px;
+  transition: all 0.15s ease;
 }
+
 .copy-gstin-btn:hover {
   color: var(--teal) !important;
+  background: rgba(13, 127, 112, 0.1);
 }
 
-.btn-outline-teal {
-  color: var(--teal-dark);
-  border: 1px solid var(--teal);
-  background: transparent;
-}
-.btn-outline-teal:hover {
-  background: var(--teal);
-  color: #fff;
-}
-
-/* Verified-state "seal" badge — a small nod to an official stamp for GSTIN
+/* Verified-state "seal" badge - a small nod to an official stamp for GSTIN
    portal-verified parties, rather than a plain colored pill. */
 .badge.seal-verified {
   display: inline-flex;
@@ -378,4 +610,142 @@ h1, h2, h3, h4, h5, h6,
   border-radius: 20px;
   font-weight: 700;
   letter-spacing: 0.02em;
+}
+
+/* ==========================================================================
+   Tables & Financial Data Grids
+   ========================================================================== */
+
+/* Scrollable data tables (Monthly Breakdown, Counterparties, Transactions
+   Explorer) - the header row stays pinned while the body scrolls underneath it. */
+.table-scroll {
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  background: #ffffff;
+  max-height: 560px;
+  overflow-y: auto;
+}
+
+.table-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.monthly-table, .party-table, .invoice-table {
+  margin-bottom: 0;
+  font-size: 0.81rem;
+}
+
+.monthly-table thead th,
+.party-table thead th,
+.invoice-table thead th {
+  background-color: #f8fafc !important;
+  color: var(--ink-700);
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.75rem 0.85rem;
+  border-bottom: 1px solid var(--card-border);
+  white-space: nowrap;
+}
+
+.monthly-table tbody td,
+.party-table tbody td,
+.invoice-table tbody td {
+  padding: 0.65rem 0.85rem;
+  color: var(--ink-800);
+  border-bottom: 1px solid #f1f5f9;
+  vertical-align: middle;
+}
+
+.monthly-table tbody tr:hover td,
+.party-table tbody tr:hover td,
+.invoice-table tbody tr:hover td {
+  background-color: #f8fafc;
+}
+
+.sortable-th {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition: color 0.15s ease;
+}
+
+.sortable-th:hover {
+  color: var(--teal);
+}
+
+.sortable-th .sort-icon {
+  opacity: 0.25;
+  margin-left: 5px;
+  font-size: 0.75em;
+  transition: opacity 0.15s ease;
+}
+
+.sortable-th:hover .sort-icon {
+  opacity: 0.7;
+}
+
+.sortable-th.sort-active .sort-icon {
+  opacity: 1;
+  color: var(--teal);
+}
+
+.table-dark tfoot th,
+tfoot.table-dark th {
+  background-color: var(--primary-navy) !important;
+  color: #ffffff !important;
+  font-weight: 700;
+  padding: 0.75rem 0.85rem;
+  border-top: 2px solid var(--navy-border);
+}
+
+/* Modals & Forms */
+.modal-content {
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--card-border);
+  box-shadow: var(--card-shadow-lg);
+}
+
+.modal-header.bg-dark-navy {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.form-control, .form-select {
+  border-color: var(--card-border);
+  border-radius: 6px;
+  font-size: 0.82rem;
+  color: var(--ink-900);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.form-control:focus, .form-select:focus {
+  border-color: var(--teal);
+  box-shadow: 0 0 0 3px var(--teal-glow);
+}
+
+.input-group-text {
+  border-color: var(--card-border);
+  background-color: #f8fafc;
+  font-size: 0.82rem;
+  color: var(--ink-600);
+}
+
+/* Empty State Placeholders */
+.empty-client-placeholder {
+  background: #ffffff;
+  border: 1px dashed var(--card-border);
+  border-radius: 8px;
+  padding: 4rem 1.5rem;
+}
+
+/* Toast styling */
+.toast {
+  border-radius: 8px;
+  box-shadow: var(--card-shadow-lg);
+  font-size: 0.84rem;
 }

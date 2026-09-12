@@ -1,10 +1,11 @@
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 from typing import List, Tuple
-from domain import NormalizedDocument
+from domain import NormalizedDocument, is_journal_doc
 from constants import format_party_ledger, get_state_name, get_party_legal_name, get_party_trade_name, get_name_preference
 
 ADVANCE_LIABILITY_LEDGER = "Advance Receipt - GST Liability A/c"
+RCM_LIABILITY_LEDGER = "GST Payable under RCM A/c"
 
 class TallyXMLEngine:
     """Generates Tally-compliant Masters and Entries XML payloads using native ElementTree."""
@@ -47,7 +48,9 @@ class TallyXMLEngine:
         if is_sales and any(d.doc_type.startswith("EXP") for d in documents):
             base_accounts.append(("Export Sales A/c", "Sales Accounts"))
         if is_sales and any(d.doc_type.startswith("ADVANCE") for d in documents):
-            base_accounts.append((ADVANCE_LIABILITY_LEDGER, "Loans & Advances (Asset)"))
+            base_accounts.append((ADVANCE_LIABILITY_LEDGER, "Current Liabilities"))
+        if not is_sales and any(d.doc_type == "RCM_SELF_INVOICE" for d in documents):
+            base_accounts.append((RCM_LIABILITY_LEDGER, "Duties & Taxes"))
 
         for ac_name, parent_group in base_accounts:
             msg = ET.SubElement(req_data, "TALLYMESSAGE", {"xmlns:UDF": "TallyUDF"})
@@ -58,7 +61,7 @@ class TallyXMLEngine:
         for doc in documents:
             # Advance-tax entries post only against the liability ledger + tax ledgers
             # (no counterparty is reported for these sections) - skip party master creation.
-            if doc.doc_type.startswith("ADVANCE"):
+            if is_journal_doc(doc):
                 for tax in doc.tax_lines:
                     prefix = "Output" if is_sales else "Input"
                     tax_ledger_name = f"{prefix} {tax.tax_type} {tax.rate}% A/c"
@@ -86,7 +89,7 @@ class TallyXMLEngine:
                     ET.SubElement(ledger, "LEDSTATENAME").text = get_state_name(doc.party_gstin)
                     ET.SubElement(ledger, "ISBILLWISEON").text = "Yes"
                     pref = get_name_preference()
-                    mailing_name = get_party_legal_name(doc.party_gstin) if pref == "TRADE" else get_party_trade_name(doc.party_gstin)
+                    mailing_name = get_party_trade_name(doc.party_gstin) if pref == "TRADE" else get_party_legal_name(doc.party_gstin)
                     if mailing_name:
                         mailing_list = ET.SubElement(ledger, "MAILINGNAME.LIST", {"TYPE": "String"})
                         ET.SubElement(mailing_list, "MAILINGNAME").text = mailing_name
@@ -146,6 +149,11 @@ class TallyXMLEngine:
                 TallyXMLEngine._build_advance_voucher(msg, doc, gstr_type, is_sales)
                 continue
 
+            if doc.doc_type == "RCM_SELF_INVOICE":
+                msg = ET.SubElement(req_data, "TALLYMESSAGE", {"xmlns:UDF": "TallyUDF"})
+                TallyXMLEngine._build_rcm_voucher(msg, doc, gstr_type)
+                continue
+
             # Calculate discrepancy: |total_val - (taxable_val + tax_sum)|
             tax_sum = sum(t.amount for t in doc.tax_lines)
             discrepancy = round(abs(doc.total_val - (doc.taxable_val + tax_sum)), 2)
@@ -181,8 +189,17 @@ class TallyXMLEngine:
             ET.SubElement(p_entry, "AMOUNT").text = f"{p_amount:.2f}"
             if doc.party_gstin:
                 ba = ET.SubElement(p_entry, "BILLALLOCATIONS.LIST")
-                ET.SubElement(ba, "NAME").text = doc.doc_number
-                ET.SubElement(ba, "BILLTYPE").text = "New Ref"
+                # Amendments (B2BA/CDNRA/...) carry the prior document's number from
+                # the portal (original_doc_num) - referencing it as "Agst Ref" nets
+                # this voucher against that existing bill instead of opening a second,
+                # unlinked one for the same invoice. A plain (non-amended) document has
+                # no such reference in the GST data, so it correctly opens a new bill.
+                if doc.original_doc_num:
+                    ET.SubElement(ba, "NAME").text = doc.original_doc_num
+                    ET.SubElement(ba, "BILLTYPE").text = "Agst Ref"
+                else:
+                    ET.SubElement(ba, "NAME").text = doc.doc_number
+                    ET.SubElement(ba, "BILLTYPE").text = "New Ref"
                 ET.SubElement(ba, "AMOUNT").text = f"{p_amount:.2f}"
 
             # 2. Revenue / Expense Line
@@ -213,6 +230,58 @@ class TallyXMLEngine:
                 ET.SubElement(ro_entry, "LEDGERNAME").text = "Round Off A/c"
                 ET.SubElement(ro_entry, "ISDEEMEDPOSITIVE").text = "Yes" if round_off < 0 else "No"
                 ET.SubElement(ro_entry, "AMOUNT").text = f"{round_off:.2f}"
+
+        return TallyXMLEngine._prettify(envelope)
+
+    @staticmethod
+    def list_voucher_identities(documents: List[NormalizedDocument], gstr_type: str) -> List[dict]:
+        """Mirrors generate_entries_xml's own type-resolution and discrepancy-skip
+        logic to report exactly which vouchers a push actually put into Tally -
+        {period_label, vch_type, vch_number, vch_date} per voucher. Used to record
+        what was pushed, so a later period deletion can cancel precisely those
+        vouchers in Tally instead of leaving them there as orphans."""
+        is_sales = (gstr_type.upper() == "GSTR1")
+        identities = []
+        for doc in documents:
+            if is_journal_doc(doc):
+                vch_type = "Journal"
+            else:
+                tax_sum = sum(t.amount for t in doc.tax_lines)
+                discrepancy = round(abs(doc.total_val - (doc.taxable_val + tax_sum)), 2)
+                if discrepancy > TallyXMLEngine.MAX_ROUNDOFF_TOLERANCE:
+                    continue
+                vch_type, _, _, _ = TallyXMLEngine._resolve_voucher_rules(doc.doc_type, is_sales)
+            identities.append({
+                "period_label": doc.period_label,
+                "vch_type": vch_type,
+                "vch_number": doc.doc_number,
+                "vch_date": doc.doc_date,
+            })
+        return identities
+
+    @staticmethod
+    def generate_cancel_xml(voucher_entries: List[dict]) -> str:
+        """Builds a Tally import XML that cancels each given voucher (identified by
+        VOUCHERTYPENAME + VOUCHERNUMBER + DATE, the same triplet Tally already uses to
+        match Create/Alter - no GUID tracking exists in this tool). A cancelled voucher
+        stays in Tally's register marked void, preserving the audit trail, rather than
+        being silently removed."""
+        envelope = ET.Element("ENVELOPE")
+        header = ET.SubElement(envelope, "HEADER")
+        ET.SubElement(header, "TALLYREQUEST").text = "Import Data"
+
+        body = ET.SubElement(envelope, "BODY")
+        import_data = ET.SubElement(body, "IMPORTDATA")
+        req_desc = ET.SubElement(import_data, "REQUESTDESC")
+        ET.SubElement(req_desc, "REPORTNAME").text = "Vouchers"
+        req_data = ET.SubElement(import_data, "REQUESTDATA")
+
+        for v in voucher_entries:
+            msg = ET.SubElement(req_data, "TALLYMESSAGE", {"xmlns:UDF": "TallyUDF"})
+            vch = ET.SubElement(msg, "VOUCHER", {"ACTION": "Cancel"})
+            ET.SubElement(vch, "DATE").text = v.get("vch_date") or ""
+            ET.SubElement(vch, "VOUCHERTYPENAME").text = v["vch_type"]
+            ET.SubElement(vch, "VOUCHERNUMBER").text = v["vch_number"]
 
         return TallyXMLEngine._prettify(envelope)
 
@@ -278,6 +347,36 @@ class TallyXMLEngine:
             ET.SubElement(t_entry, "ISDEEMEDPOSITIVE").text = "Yes" if tax.is_debit else "No"
             t_amt = -tax.amount if tax.is_debit else tax.amount
             ET.SubElement(t_entry, "AMOUNT").text = f"{t_amt:.2f}"
+
+    @staticmethod
+    def _build_rcm_voucher(msg: ET.Element, doc: NormalizedDocument, gstr_type: str):
+        """Reverse-charge purchases (rev='Y' in GSTR-2B) carry no tax from the supplier -
+        the recipient self-assesses and claims it. This posts that self-invoice as a
+        Journal: Dr Input CGST/SGST/IGST (claiming the credit), Cr the RCM liability
+        ledger (the cash/challan payment against that liability is a separate,
+        manual Tally entry outside this tool's scope)."""
+        tax_total = round(sum(t.amount for t in doc.tax_lines), 2)
+
+        vch = ET.SubElement(msg, "VOUCHER", {"ACTION": "Create", "VCHTYPE": "Journal"})
+        ET.SubElement(vch, "DATE").text = doc.doc_date
+        ET.SubElement(vch, "VOUCHERTYPENAME").text = "Journal"
+        ET.SubElement(vch, "VOUCHERNUMBER").text = doc.doc_number
+        ET.SubElement(vch, "REFERENCE").text = doc.doc_number
+        ET.SubElement(vch, "NARRATION").text = (
+            f"Auto-imported [{gstr_type}] RCM self-invoice - GST self-assessed under reverse charge, Doc #{doc.doc_number}"
+        )
+
+        for tax in doc.tax_lines:
+            tax_ledger_name = f"Input {tax.tax_type} {tax.rate}% A/c"
+            t_entry = ET.SubElement(vch, "ALLLEDGERENTRIES.LIST")
+            ET.SubElement(t_entry, "LEDGERNAME").text = tax_ledger_name
+            ET.SubElement(t_entry, "ISDEEMEDPOSITIVE").text = "Yes"
+            ET.SubElement(t_entry, "AMOUNT").text = f"{-tax.amount:.2f}"
+
+        liability_entry = ET.SubElement(vch, "ALLLEDGERENTRIES.LIST")
+        ET.SubElement(liability_entry, "LEDGERNAME").text = RCM_LIABILITY_LEDGER
+        ET.SubElement(liability_entry, "ISDEEMEDPOSITIVE").text = "No"
+        ET.SubElement(liability_entry, "AMOUNT").text = f"{tax_total:.2f}"
 
     @staticmethod
     def _prettify(elem: ET.Element) -> str:

@@ -4,8 +4,102 @@ let activeClient = null;
 let allPartiesData = [];
 let allInvoicesData = [];
 let currentPage = 1;
-const pageSize = 50;
+let pageSize = 50;
 let lastCaptchaImageB64 = null;
+let invSortBy = null;
+let invSortDir = "asc";
+
+// Sales (GSTR-1) vs Purchases (GSTR-2B) - shared across Monthly Breakdown, Transactions
+// Explorer, and TallyPrime XML Export, since a client's sales and purchases are two
+// independent datasets behind the same GSTIN.
+let currentReturnType = "GSTR1";
+
+const MONTHLY_COLUMNS = {
+  GSTR1: [
+    { key: "b2b_count", label: "B2B" },
+    { key: "b2c_count", label: "B2C" },
+    { key: "cdnr_count", label: "CDNR" },
+    { key: "exp_count", label: "EXP" },
+    { key: "advance_count", label: "ADV" }
+  ],
+  // Purchases only has 4 real document-type categories (no B2C/EXP/ADV analogue) -
+  // no 5th placeholder column here; renderMonthlyTable() hides that header/cell
+  // slot entirely rather than showing a permanently blank "—" column.
+  GSTR2B: [
+    { key: "b2b_count", label: "B2B" },
+    { key: "rcm_count", label: "RCM" },
+    { key: "cdnr_count", label: "CDNR" },
+    { key: "ineligible_count", label: "Ineligible" }
+  ]
+};
+
+const INVOICE_TYPE_OPTIONS = {
+  GSTR1: [
+    { value: "", label: "All Types" },
+    { value: "B2B", label: "B2B Sales" },
+    { value: "B2CL", label: "B2C Large" },
+    { value: "B2CS", label: "B2C Retail" },
+    { value: "EXP", label: "Exports" },
+    { value: "ADVANCE", label: "Advances" },
+    { value: "CDNR", label: "Credit/Debit Notes" }
+  ],
+  GSTR2B: [
+    { value: "", label: "All Types" },
+    { value: "B2B", label: "B2B Purchases" },
+    { value: "RCM", label: "Reverse Charge (RCM)" },
+    { value: "INELIGIBLE", label: "Ineligible ITC" },
+    { value: "CDNR", label: "Credit/Debit Notes" }
+  ]
+};
+
+/** Switches the whole app between viewing Sales (GSTR-1) and Purchases (GSTR-2B) data.
+ * Keeps every return-type toggle in the UI (Monthly Breakdown, Transactions Explorer,
+ * XML Export) in sync, since they all reflect the same underlying selection. */
+function setReturnType(rt) {
+  currentReturnType = (rt === "GSTR2B") ? "GSTR2B" : "GSTR1";
+  const isSales = currentReturnType === "GSTR1";
+
+  ["rtOverviewSales", "rtInvoicesSales", "rtTallySales", "rtKpiSales"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.checked = isSales;
+  });
+  ["rtOverviewPurchases", "rtInvoicesPurchases", "rtTallyPurchases", "rtKpiPurchases"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.checked = !isSales;
+  });
+
+  const kpiLabel = document.getElementById("kpiReturnTypeLabel");
+  if (kpiLabel) kpiLabel.textContent = isSales ? "Sales (GSTR-1)" : "Purchases (GSTR-2B)";
+
+  const subtitle = document.getElementById("invoicesSubtitle");
+  if (subtitle) {
+    subtitle.textContent = isSales
+      ? "Every sales invoice, B2C/B2C Large summary, export, advance-tax entry & credit/debit note"
+      : "Every purchase invoice, reverse-charge self-invoice, ineligible-ITC entry & credit/debit note";
+  }
+  const stepLabel = document.getElementById("xmlGenStepLabel");
+  if (stepLabel) stepLabel.textContent = `Method 1: Generate Consolidated ${isSales ? "Sales" : "Purchase"} XML`;
+  const genDesc = document.getElementById("xmlGenDescription");
+  if (genDesc) {
+    const suffix = isSales ? "Sales" : "Purchases";
+    genDesc.innerHTML = `Generates a unified single <strong>Consolidated_Masters_${suffix}.xml</strong> (all counterparty ledgers and GST duty ledgers) and <strong>Consolidated_Entries_${suffix}.xml</strong> (all vouchers across all months) matching TallyPrime schemas.`;
+  }
+  const xmlContainer = document.getElementById("xmlFilesContainer");
+  if (xmlContainer) xmlContainer.classList.add("d-none");
+  const importBox = document.getElementById("importResultBox");
+  if (importBox) importBox.classList.add("d-none");
+
+  updateInvoiceTypeFilterOptions();
+  fetchOverviewData();
+  fetchInvoices(1);
+}
+
+function updateInvoiceTypeFilterOptions() {
+  const select = document.getElementById("invTypeFilter");
+  if (!select) return;
+  const options = INVOICE_TYPE_OPTIONS[currentReturnType] || INVOICE_TYPE_OPTIONS.GSTR1;
+  select.innerHTML = options.map(o => `<option value="${o.value}">${o.label}</option>`).join("");
+}
 
 const STATE_CODES = {
   "01": "Jammu & Kashmir", "02": "Himachal Pradesh", "03": "Punjab", "04": "Chandigarh",
@@ -66,6 +160,8 @@ function switchToTab(tabId) {
 
 async function initApp() {
   setupTabListeners();
+  updateInvoiceTypeFilterOptions();
+  populateClientFormFYOptions();
   await fetchClients();
   // Fire-and-forget: Tally may be offline, and pinging it shouldn't block
   // every page load. checkTallyStatus() updates its own pill UI independently.
@@ -127,31 +223,9 @@ function copyToClipboard(text) {
 // ---------------------------------------------------------------------------
 // 1. Client Management Database APIs & UI
 // ---------------------------------------------------------------------------
-function updateDashboardSystemStats() {
-  const totalClients = clientsList.length;
-  const activeCount = clientsList.filter(c => (c.status || 'active').toLowerCase() === 'active').length;
-  const totalPeriods = clientsList.reduce((sum, c) => sum + (Number(c.total_periods) || 0), 0);
-  const totalDocs = clientsList.reduce((sum, c) => sum + (Number(c.total_docs) || 0), 0);
-  const totalTurnover = clientsList.reduce((sum, c) => sum + (Number(c.total_taxable) || 0), 0);
-
-  const dashClients = document.getElementById("dashTotalClients");
-  if (dashClients) dashClients.textContent = totalClients.toLocaleString();
-
-  const dashActive = document.getElementById("dashActiveClientsText");
-  if (dashActive) dashActive.textContent = `${activeCount} Active Taxpayers`;
-
-  const dashPeriods = document.getElementById("dashTotalPeriods");
-  if (dashPeriods) dashPeriods.textContent = totalPeriods.toLocaleString();
-
-  const dashDocs = document.getElementById("dashTotalDocs");
-  if (dashDocs) dashDocs.textContent = totalDocs.toLocaleString();
-
-  const dashTurnover = document.getElementById("dashTotalTurnover");
-  if (dashTurnover) dashTurnover.textContent = formatINR(totalTurnover);
-}
-
 function updateClientViewStates(client) {
   const kpiMetricsStrip = document.getElementById("kpiMetricsStrip");
+  const kpiMetricsHeader = document.getElementById("kpiMetricsHeader");
   const heroBanner = document.getElementById("activeClientHeroBanner");
 
   const overviewEmpty = document.getElementById("overviewEmptyState");
@@ -168,6 +242,7 @@ function updateClientViewStates(client) {
 
   if (client) {
     if (kpiMetricsStrip) kpiMetricsStrip.classList.remove("d-none");
+    if (kpiMetricsHeader) kpiMetricsHeader.classList.remove("d-none");
     if (heroBanner) heroBanner.classList.remove("d-none");
 
     if (overviewEmpty) overviewEmpty.classList.add("d-none");
@@ -183,6 +258,7 @@ function updateClientViewStates(client) {
     if (tallyContent) tallyContent.classList.remove("d-none");
   } else {
     if (kpiMetricsStrip) kpiMetricsStrip.classList.add("d-none");
+    if (kpiMetricsHeader) kpiMetricsHeader.classList.add("d-none");
     if (heroBanner) heroBanner.classList.add("d-none");
 
     if (overviewEmpty) overviewEmpty.classList.remove("d-none");
@@ -211,7 +287,7 @@ function clearOverviewUI() {
   const kpiTax = document.getElementById("kpiTotalTax");
   if (kpiTax) kpiTax.textContent = "₹0.00";
   const kpiTaxSplit = document.getElementById("kpiTaxSplit");
-  if (kpiTaxSplit) kpiTaxSplit.textContent = "CGST: ₹0 | SGST: ₹0";
+  if (kpiTaxSplit) kpiTaxSplit.textContent = "CGST: ₹0 | SGST: ₹0 | IGST: ₹0";
   const kpiGross = document.getElementById("kpiGross");
   if (kpiGross) kpiGross.textContent = "₹0.00";
   const kpiGrossCr = document.getElementById("kpiGrossCr");
@@ -237,7 +313,6 @@ async function fetchClients() {
       updateClientViewStates(activeClient);
     }
 
-    updateDashboardSystemStats();
     renderNavClientsDropdown(clientsList);
     renderClientsGrid(clientsList);
     return clientsList;
@@ -325,9 +400,6 @@ function renderClientsGrid(list) {
 
   grid.innerHTML = list.map(c => {
     const isActive = activeClient && c.id === activeClient.id;
-    const periods = c.total_periods || 0;
-    const docs = c.total_docs || 0;
-    const taxable = c.total_taxable || 0;
 
     return `
       <div class="col-xl-4 col-md-6">
@@ -371,21 +443,26 @@ function renderClientsGrid(list) {
                 </span>
               </div>
 
-              <!-- Filing Stats Pill -->
-              <div class="row g-2 text-center p-2 rounded bg-light border-0 bg-opacity-50 mb-3" style="background: #f8fafc;">
-                <div class="col-4 border-end">
-                  <div class="small text-muted" style="font-size: 0.7rem;">PERIODS</div>
-                  <div class="fw-bold text-dark">${periods}</div>
+              <!-- Uploaded Return Months (Sales vs Purchases, kept visually separate) -->
+              <div class="mb-1">
+                <div class="small text-muted fw-semibold mb-1" style="font-size: 0.7rem;">
+                  <i class="fa-solid fa-arrow-up-right-from-square text-teal me-1"></i>SALES (GSTR-1) MONTHS
                 </div>
-                <div class="col-4 border-end">
-                  <div class="small text-muted" style="font-size: 0.7rem;">DOCS</div>
-                  <div class="fw-bold text-primary">${docs.toLocaleString()}</div>
+                <div class="d-flex flex-wrap gap-1 mb-2">
+                  ${(c.sales_months && c.sales_months.length)
+                    ? c.sales_months.map(m => `<span class="badge bg-teal-subtle text-teal-dark border-teal-light border small fw-normal">${m}</span>`).join("")
+                    : '<span class="small text-muted fst-italic">No sales returns uploaded</span>'}
                 </div>
-                <div class="col-4">
-                  <div class="small text-muted" style="font-size: 0.7rem;">TURNOVER</div>
-                  <div class="fw-bold text-success">${formatCr(taxable)}</div>
+                <div class="small text-muted fw-semibold mb-1" style="font-size: 0.7rem;">
+                  <i class="fa-solid fa-arrow-down-left-from-circle text-primary me-1"></i>PURCHASES (GSTR-2B) MONTHS
+                </div>
+                <div class="d-flex flex-wrap gap-1">
+                  ${(c.purchase_months && c.purchase_months.length)
+                    ? c.purchase_months.map(m => `<span class="badge bg-primary-subtle text-primary border small fw-normal">${m}</span>`).join("")
+                    : '<span class="small text-muted fst-italic">No purchase returns uploaded</span>'}
                 </div>
               </div>
+
             </div>
 
             <!-- Action Buttons Footer -->
@@ -514,6 +591,21 @@ async function viewClientReturns(clientId) {
 // ---------------------------------------------------------------------------
 // 2. Add / Edit Client Modal Functions
 // ---------------------------------------------------------------------------
+// GST Financial Years run April-March. Offers a fixed range around today so
+// the dropdown never needs updating: a few years back for backfiling, one
+// year ahead for early setup.
+function populateClientFormFYOptions() {
+  const sel = document.getElementById("clientFormFY");
+  if (!sel) return;
+  const now = new Date();
+  const currentFyStart = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+  sel.innerHTML = '<option value="">Not set</option>';
+  for (let startYear = currentFyStart + 1; startYear >= currentFyStart - 7; startYear--) {
+    const label = `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`;
+    sel.insertAdjacentHTML("beforeend", `<option value="${label}">${label}</option>`);
+  }
+}
+
 function openAddClientModal() {
   document.getElementById("clientModalTitleText").textContent = "Add New Taxpayer Client";
   document.getElementById("clientFormId").value = "";
@@ -526,6 +618,8 @@ function openAddClientModal() {
   if (gstUserEl) gstUserEl.value = "";
   const gstPassEl = document.getElementById("clientFormGstPass");
   if (gstPassEl) gstPassEl.value = "";
+  const fyEl = document.getElementById("clientFormFY");
+  if (fyEl) fyEl.value = "";
 
   const delBtn = document.getElementById("clientModalDeleteBtn");
   if (delBtn) delBtn.classList.add("d-none");
@@ -565,6 +659,8 @@ function openEditClientModal(clientId) {
   if (gstUserEl) gstUserEl.value = c.gst_username || "";
   const gstPassEl = document.getElementById("clientFormGstPass");
   if (gstPassEl) gstPassEl.value = c.gst_password || "";
+  const fyEl = document.getElementById("clientFormFY");
+  if (fyEl) fyEl.value = c.financial_year || "";
   document.getElementById("clientFormAlert").classList.add("d-none");
 
   const delBtn = document.getElementById("clientModalDeleteBtn");
@@ -690,6 +786,7 @@ async function handleClientSubmit(e) {
     notes: document.getElementById("clientFormNotes").value.trim() || undefined,
     gst_username: document.getElementById("clientFormGstUser") ? (document.getElementById("clientFormGstUser").value.trim() || undefined) : undefined,
     gst_password: document.getElementById("clientFormGstPass") ? (document.getElementById("clientFormGstPass").value.trim() || undefined) : undefined,
+    financial_year: document.getElementById("clientFormFY") ? (document.getElementById("clientFormFY").value.trim() || undefined) : undefined,
   };
 
   const saveBtn = document.getElementById("clientFormSaveBtn");
@@ -844,22 +941,23 @@ async function checkTallyStatus() {
 // ---------------------------------------------------------------------------
 async function fetchOverviewData() {
   try {
-    const res = await fetch("/api/overview");
+    const res = await fetch(`/api/overview?return_type=${currentReturnType}`);
     const data = await res.json();
     const totals = data.totals || {};
     const months = data.monthly_stats || [];
 
     // Update KPIs
     document.getElementById("kpiTotalDocs").textContent = (totals.total_documents || 0).toLocaleString("en-IN");
-    document.getElementById("kpiDocSplit").textContent =
-      `B2B: ${(totals.total_b2b || 0).toLocaleString()} | B2C: ${(totals.total_b2c || 0).toLocaleString()} | CDNR: ${(totals.total_cdnr || 0).toLocaleString()} | EXP: ${(totals.total_exp || 0).toLocaleString()} | ADV: ${(totals.total_advance || 0).toLocaleString()}`;
-    
+    document.getElementById("kpiDocSplit").textContent = (currentReturnType === "GSTR1")
+      ? `B2B: ${(totals.total_b2b || 0).toLocaleString()} | B2C: ${(totals.total_b2c || 0).toLocaleString()} | CDNR: ${(totals.total_cdnr || 0).toLocaleString()} | EXP: ${(totals.total_exp || 0).toLocaleString()} | ADV: ${(totals.total_advance || 0).toLocaleString()}`
+      : `B2B: ${(totals.total_b2b || 0).toLocaleString()} | RCM: ${(totals.total_rcm || 0).toLocaleString()} | CDNR: ${(totals.total_cdnr || 0).toLocaleString()} | Ineligible: ${(totals.total_ineligible || 0).toLocaleString()}`;
+
     document.getElementById("kpiTaxable").textContent = formatINR(totals.taxable_turnover);
     document.getElementById("kpiTaxableCr").textContent = formatCr(totals.taxable_turnover);
 
     document.getElementById("kpiTotalTax").textContent = formatINR(totals.total_tax);
-    document.getElementById("kpiTaxSplit").textContent = 
-      `CGST: ${formatINR(totals.total_cgst)} | SGST: ${formatINR(totals.total_sgst)}`;
+    document.getElementById("kpiTaxSplit").textContent =
+      `CGST: ${formatINR(totals.total_cgst)} | SGST: ${formatINR(totals.total_sgst)} | IGST: ${formatINR(totals.total_igst)}`;
 
     document.getElementById("kpiGross").textContent = formatINR(totals.gross_invoiced_value);
     document.getElementById("kpiGrossCr").textContent = formatCr(totals.gross_invoiced_value);
@@ -877,25 +975,92 @@ async function fetchOverviewData() {
   }
 }
 
+let currentMonthlyMonths = [];
+let currentMonthlyTotals = {};
+let monthlySortBy = null;
+let monthlySortDir = "asc";
+
+// The middle 5 columns swap meaning between Sales (B2B/B2C/CDNR/EXP/ADV) and
+// Purchases (B2B/RCM/CDNR/Ineligible/—), so sorting by them is addressed
+// generically as col0..col4 and resolved to the actual data key at sort time.
+function monthlySortValue(m, cols, key) {
+  if (key === "label") return m.label || "";
+  const colMatch = /^col(\d)$/.exec(key);
+  if (colMatch) {
+    const col = cols[Number(colMatch[1])];
+    return col && col.key ? (m[col.key] || 0) : 0;
+  }
+  return m[key] || 0;
+}
+
+function sortMonthlyTable(key) {
+  if (monthlySortBy === key) {
+    monthlySortDir = monthlySortDir === "asc" ? "desc" : "asc";
+  } else {
+    monthlySortBy = key;
+    monthlySortDir = "asc";
+  }
+  renderMonthlyTable(currentMonthlyMonths, currentMonthlyTotals);
+}
+
+function updateMonthlySortIndicators() {
+  document.querySelectorAll('[id^="monthlySortIcon-"]').forEach(icon => {
+    const key = icon.id.replace("monthlySortIcon-", "");
+    const th = icon.closest("th");
+    icon.className = "fa-solid sort-icon " + (key === monthlySortBy ? (monthlySortDir === "asc" ? "fa-sort-up" : "fa-sort-down") : "fa-sort");
+    if (th) th.classList.toggle("sort-active", key === monthlySortBy);
+  });
+}
+
 function renderMonthlyTable(months, totals) {
+  currentMonthlyMonths = months || [];
+  currentMonthlyTotals = totals || {};
+
   const tbody = document.getElementById("monthlyTableBody");
   const tfoot = document.getElementById("monthlyTableFoot");
+  const cols = MONTHLY_COLUMNS[currentReturnType] || MONTHLY_COLUMNS.GSTR1;
+
+  // Sales has 5 document-type categories, Purchases only 4 - hide the header slot
+  // entirely (not just leave it labeled "—") when this return type has no 5th one,
+  // rather than showing a permanently blank column.
+  for (let i = 0; i < 5; i++) {
+    const th = document.getElementById(`thMonthlyCol${i + 2}`);
+    if (!th) continue;
+    const col = cols[i];
+    th.classList.toggle("d-none", !col);
+    const labelEl = th.querySelector(".col-label");
+    if (labelEl && col) labelEl.textContent = col.label;
+  }
+
+  updateMonthlySortIndicators();
+
+  const totalLabel = currentReturnType === "GSTR1" ? "Uploaded Returns" : "Uploaded Purchase Returns";
 
   if (!months || months.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="14" class="text-center py-4 text-muted">No monthly return data found for active client. Use 'Upload GSTR-1' to import return files.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="14" class="text-center py-4 text-muted">No monthly ${totalLabel.toLowerCase()} found for active client. Use 'Upload Returns' to import return files.</td></tr>`;
     tfoot.innerHTML = "";
     return;
   }
+
+  if (monthlySortBy) {
+    months = [...months].sort((a, b) => {
+      const va = monthlySortValue(a, cols, monthlySortBy);
+      const vb = monthlySortValue(b, cols, monthlySortBy);
+      const cmp = typeof va === "string" ? va.localeCompare(vb) : va - vb;
+      return monthlySortDir === "asc" ? cmp : -cmp;
+    });
+  }
+
+  const cell = (m, col) => col.key ? (m[col.key] || 0).toLocaleString() : "—";
+  // Omits the <td> entirely (not just leaves it blank) for a type-column slot this
+  // return type doesn't have, matching the header cells hidden above.
+  const typeCells = (renderFn) => [0, 1, 2, 3, 4].map(i => cols[i] ? renderFn(cols[i]) : "").join("");
 
   tbody.innerHTML = months.map(m => `
     <tr>
       <td><strong class="text-primary">${m.label}</strong></td>
       <td class="text-center fw-semibold">${m.total_docs.toLocaleString()}</td>
-      <td class="text-center text-muted">${m.b2b_count.toLocaleString()}</td>
-      <td class="text-center text-muted">${m.b2c_count.toLocaleString()}</td>
-      <td class="text-center text-muted">${m.cdnr_count.toLocaleString()}</td>
-      <td class="text-center text-muted">${(m.exp_count || 0).toLocaleString()}</td>
-      <td class="text-center text-muted">${(m.advance_count || 0).toLocaleString()}</td>
+      ${typeCells(col => `<td class="text-center text-muted">${cell(m, col)}</td>`)}
       <td class="text-center badge-party">${m.parties_count}</td>
       <td class="text-end font-mono">${formatINR(m.taxable_val)}</td>
       <td class="text-end font-mono text-muted">${formatINR(m.cgst_val)}</td>
@@ -910,15 +1075,13 @@ function renderMonthlyTable(months, totals) {
     </tr>
   `).join("");
 
+  const totalsCell = (col) => col.key ? (totals[`total_${col.key.replace('_count', '')}`] || 0).toLocaleString() : "—";
+
   tfoot.innerHTML = `
     <tr>
       <th>Total (${months.length} Months)</th>
       <th class="text-center">${(totals.total_documents || 0).toLocaleString()}</th>
-      <th class="text-center">${(totals.total_b2b || 0).toLocaleString()}</th>
-      <th class="text-center">${(totals.total_b2c || 0).toLocaleString()}</th>
-      <th class="text-center">${(totals.total_cdnr || 0).toLocaleString()}</th>
-      <th class="text-center">${(totals.total_exp || 0).toLocaleString()}</th>
-      <th class="text-center">${(totals.total_advance || 0).toLocaleString()}</th>
+      ${typeCells(col => `<th class="text-center">${totalsCell(col)}</th>`)}
       <th class="text-center">${totals.unique_parties || 0}</th>
       <th class="text-end font-mono">${formatINR(totals.taxable_turnover)}</th>
       <th class="text-end font-mono">${formatINR(totals.total_cgst)}</th>
@@ -934,7 +1097,7 @@ async function deleteReturnPeriod(label) {
   if (!activeClient) return;
   if (!confirm(`Are you sure you want to delete return data for period '${label}'?`)) return;
   try {
-    const res = await fetch(`/api/clients/${activeClient.id}/periods/${encodeURIComponent(label)}`, { method: "DELETE" });
+    const res = await fetch(`/api/clients/${activeClient.id}/periods/${encodeURIComponent(label)}?return_type=${currentReturnType}`, { method: "DELETE" });
     const data = await safeJson(res);
     if (res.ok) {
       showToast(data.message || `Period ${label} deleted.`);
@@ -951,9 +1114,10 @@ async function deleteReturnPeriod(label) {
 
 async function clearClientReturnsPrompt() {
   if (!activeClient) return;
-  if (!confirm(`Are you sure you want to clear ALL uploaded return files for client '${activeClient.name}'? This cannot be undone.`)) return;
+  const label = currentReturnType === "GSTR1" ? "Sales (GSTR-1)" : "Purchases (GSTR-2B)";
+  if (!confirm(`Are you sure you want to clear ALL uploaded ${label} return files for client '${activeClient.name}'? This cannot be undone.`)) return;
   try {
-    const res = await fetch(`/api/clients/${activeClient.id}/clear-returns`, { method: "DELETE" });
+    const res = await fetch(`/api/clients/${activeClient.id}/clear-returns?return_type=${currentReturnType}`, { method: "DELETE" });
     const data = await safeJson(res);
     if (res.ok) {
       showToast(data.message || "All return files cleared.");
@@ -976,12 +1140,16 @@ async function fetchParties() {
     const res = await fetch("/api/parties");
     const data = await res.json();
     allPartiesData = data.parties || [];
-
-    document.getElementById("partyCountBadge").textContent = `${allPartiesData.length} Parties`;
-    renderPartiesTable(allPartiesData);
+    filterParties();
   } catch (err) {
     console.error("Failed to load counterparties:", err);
   }
+}
+
+function relationBadge(relation) {
+  if (relation === "Supplier") return '<span class="badge bg-info-subtle text-info border border-info-subtle" style="font-size: 0.65rem;">Supplier</span>';
+  if (relation === "Both") return '<span class="badge bg-purple-subtle text-dark border" style="font-size: 0.65rem; background: #f3e8ff;">Customer & Supplier</span>';
+  return '<span class="badge bg-primary-subtle text-primary border border-primary-subtle" style="font-size: 0.65rem;">Customer</span>';
 }
 
 function renderPartiesTable(parties) {
@@ -1004,6 +1172,7 @@ function renderPartiesTable(parties) {
             <span class="font-mono fw-semibold text-primary">${p.gstin}</span>
             <i class="fa-regular fa-copy copy-gstin-btn text-muted" onclick="copyToClipboard('${p.gstin}')" title="Copy GSTIN" style="cursor: pointer; font-size: 0.75rem;"></i>
           </div>
+          ${relationBadge(p.relation)}
         </td>
         <td>
           <strong class="${p.trade_name === 'NA' ? 'text-muted fst-italic' : 'text-dark'}">${p.trade_name}</strong>
@@ -1038,21 +1207,69 @@ function renderPartiesTable(parties) {
   }).join("");
 }
 
-function filterParties() {
-  const query = document.getElementById("partySearchInput").value.toLowerCase().trim();
-  if (!query) {
-    renderPartiesTable(allPartiesData);
-    return;
-  }
+let partiesSortBy = null;
+let partiesSortDir = "asc";
 
-  const filtered = allPartiesData.filter(p => 
+function getVisibleParties() {
+  const query = (document.getElementById("partySearchInput").value || "").toLowerCase().trim();
+  let visible = !query ? allPartiesData : allPartiesData.filter(p =>
     p.gstin.toLowerCase().includes(query) ||
     p.trade_name.toLowerCase().includes(query) ||
     p.legal_name.toLowerCase().includes(query) ||
     p.state_name.toLowerCase().includes(query) ||
     p.ledger_name.toLowerCase().includes(query)
   );
-  renderPartiesTable(filtered);
+
+  // "Both" (a GSTIN appearing in Sales and Purchases) stays visible under either
+  // toggle - only a party unique to the OTHER side gets filtered out.
+  const salesRadio = document.getElementById("rtPartiesSales");
+  const purchasesRadio = document.getElementById("rtPartiesPurchases");
+  if (salesRadio && salesRadio.checked) {
+    visible = visible.filter(p => p.relation === "Customer" || p.relation === "Both");
+  } else if (purchasesRadio && purchasesRadio.checked) {
+    visible = visible.filter(p => p.relation === "Supplier" || p.relation === "Both");
+  }
+
+  if (partiesSortBy) {
+    visible = [...visible].sort((a, b) => {
+      const va = a[partiesSortBy];
+      const vb = b[partiesSortBy];
+      const cmp = typeof va === "string" ? va.localeCompare(vb) : (va === vb ? 0 : (va ? 1 : -1) - (vb ? 1 : -1));
+      return partiesSortDir === "asc" ? cmp : -cmp;
+    });
+  }
+  return visible;
+}
+
+function filterParties() {
+  const visible = getVisibleParties();
+  const badge = document.getElementById("partyCountBadge");
+  if (badge) {
+    badge.textContent = visible.length === allPartiesData.length
+      ? `${allPartiesData.length} Parties`
+      : `${visible.length} of ${allPartiesData.length} Parties`;
+  }
+  renderPartiesTable(visible);
+}
+
+function sortParties(key) {
+  if (partiesSortBy === key) {
+    partiesSortDir = partiesSortDir === "asc" ? "desc" : "asc";
+  } else {
+    partiesSortBy = key;
+    partiesSortDir = "asc";
+  }
+  updatePartiesSortIndicators();
+  renderPartiesTable(getVisibleParties());
+}
+
+function updatePartiesSortIndicators() {
+  document.querySelectorAll('[id^="partySortIcon-"]').forEach(icon => {
+    const key = icon.id.replace("partySortIcon-", "");
+    const th = icon.closest("th");
+    icon.className = "fa-solid sort-icon " + (key === partiesSortBy ? (partiesSortDir === "asc" ? "fa-sort-up" : "fa-sort-down") : "fa-sort");
+    if (th) th.classList.toggle("sort-active", key === partiesSortBy);
+  });
 }
 
 function exportPartyMappings() {
@@ -1070,10 +1287,11 @@ async function fetchInvoices(page = 1) {
   const valStatus = document.getElementById("invStatusFilter") ? document.getElementById("invStatusFilter").value : "";
 
   const tbody = document.getElementById("invoicesTableBody");
-  tbody.innerHTML = `<tr><td colspan="10" class="text-center py-4 text-muted"><div class="spinner-border spinner-border-sm me-2 text-teal" role="status"></div>Loading vouchers...</td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="12" class="text-center py-4 text-muted"><div class="spinner-border spinner-border-sm me-2 text-teal" role="status"></div>Loading vouchers...</td></tr>`;
 
   try {
-    const res = await fetch(`/api/invoices?page=${page}&limit=${pageSize}&search=${encodeURIComponent(search)}&doc_type=${encodeURIComponent(docType)}&validation_status=${encodeURIComponent(valStatus)}`);
+    const sortParams = invSortBy ? `&sort_by=${invSortBy}&sort_dir=${invSortDir}` : "";
+    const res = await fetch(`/api/invoices?return_type=${currentReturnType}&page=${page}&limit=${pageSize}&search=${encodeURIComponent(search)}&doc_type=${encodeURIComponent(docType)}&validation_status=${encodeURIComponent(valStatus)}${sortParams}`);
     const data = await res.json();
     const items = data.items || data.invoices || [];
     const total = data.total !== undefined ? data.total : (data.total_records || 0);
@@ -1102,8 +1320,59 @@ async function fetchInvoices(page = 1) {
 
   } catch (err) {
     console.error("Failed to load invoices:", err);
-    tbody.innerHTML = `<tr><td colspan="10" class="text-center py-4 text-danger">Failed to load transactions: ${err.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="12" class="text-center py-4 text-danger">Failed to load transactions: ${err.message}</td></tr>`;
   }
+
+  updateInvoiceSortIndicators();
+}
+
+// Sorting happens server-side (the table is paginated, so only the current
+// page's rows exist in the browser) - clicking a header just re-fetches page 1
+// with the new sort applied. Clicking the same header again flips direction.
+function sortInvoices(key) {
+  if (invSortBy === key) {
+    invSortDir = invSortDir === "asc" ? "desc" : "asc";
+  } else {
+    invSortBy = key;
+    invSortDir = "asc";
+  }
+  fetchInvoices(1);
+}
+
+function updateInvoiceSortIndicators() {
+  document.querySelectorAll('[id^="invSortIcon-"]').forEach(icon => {
+    const key = icon.id.replace("invSortIcon-", "");
+    const th = icon.closest("th");
+    icon.className = "fa-solid sort-icon " + (key === invSortBy ? (invSortDir === "asc" ? "fa-sort-up" : "fa-sort-down") : "fa-sort");
+    if (th) th.classList.toggle("sort-active", key === invSortBy);
+  });
+}
+
+function changeInvoicesPageSize(val) {
+  pageSize = parseInt(val, 10) || 50;
+  fetchInvoices(1);
+}
+
+function jumpToInvoicesPage(val) {
+  const p = parseInt(val, 10);
+  if (p >= 1) fetchInvoices(p);
+}
+
+// Exports every transaction matching the current search/type/status filters and
+// sort - not just the current page - as an Excel file. Reuses the exact same
+// filter state fetchInvoices() already reads from the page.
+function exportInvoicesToExcel() {
+  if (!activeClient) {
+    alert("Please select an active taxpayer client before exporting transactions.");
+    return;
+  }
+  const search = document.getElementById("invSearchInput") ? document.getElementById("invSearchInput").value : "";
+  const docType = document.getElementById("invTypeFilter") ? document.getElementById("invTypeFilter").value : "";
+  const valStatus = document.getElementById("invStatusFilter") ? document.getElementById("invStatusFilter").value : "";
+  const sortParams = invSortBy ? `&sort_by=${invSortBy}&sort_dir=${invSortDir}` : "";
+
+  const url = `/api/export-invoices-xlsx?return_type=${currentReturnType}&search=${encodeURIComponent(search)}&doc_type=${encodeURIComponent(docType)}&validation_status=${encodeURIComponent(valStatus)}${sortParams}`;
+  window.open(url, "_blank");
 }
 
 function formatDisplayDate(dateVal) {
@@ -1138,7 +1407,7 @@ function formatDisplayDate(dateVal) {
 function renderInvoicesTable(items) {
   const tbody = document.getElementById("invoicesTableBody");
   if (!items || items.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="10" class="text-center py-4 text-muted">No transactions found matching your criteria.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="12" class="text-center py-4 text-muted">No transactions found matching your criteria.</td></tr>`;
     return;
   }
 
@@ -1147,6 +1416,9 @@ function renderInvoicesTable(items) {
     const dtype = (inv.doc_type || "").toUpperCase();
     if (dtype.includes("CREDIT")) typeBadge = "bg-danger";
     else if (dtype.includes("DEBIT")) typeBadge = "bg-success";
+    else if (dtype === "RCM_SELF_INVOICE") typeBadge = "bg-dark";
+    else if (dtype.includes("RCM")) typeBadge = "bg-warning text-dark";
+    else if (dtype.includes("INELIGIBLE")) typeBadge = "bg-secondary";
     else if (dtype.startsWith("ADVANCE")) typeBadge = "bg-dark";
     else if (dtype.startsWith("EXP")) typeBadge = "bg-warning text-dark";
     else if (dtype.startsWith("B2CL")) typeBadge = "bg-secondary";
@@ -1155,8 +1427,7 @@ function renderInvoicesTable(items) {
     const docNum = inv.doc_num || inv.doc_number || "-";
     const partyName = inv.party_ledger || inv.ledger_name || inv.party_name || "Party";
     const partyGstin = inv.party_gstin || "Unregistered";
-    const rate = inv.tax_rate !== undefined ? inv.tax_rate : 18;
-    const tax = inv.total_tax !== undefined ? inv.total_tax : ((inv.cgst || 0) + (inv.sgst || 0) + (inv.igst || 0));
+    const rateDisplay = inv.rate_display || "Nil-Rated";
 
     let statusBadge = "";
     if (inv.validation_status === "balanced") {
@@ -1179,9 +1450,11 @@ function renderInvoicesTable(items) {
           </div>
         </td>
         <td><span class="font-mono small text-muted">${partyGstin}</span></td>
-        <td class="text-center font-mono small">${rate}%</td>
+        <td class="text-center font-mono small" ${rateDisplay.startsWith("Multiple") ? `title="${rateDisplay}"` : ""}>${rateDisplay.startsWith("Multiple") ? '<span class="text-warning-emphasis"><i class="fa-solid fa-triangle-exclamation me-1"></i>Multiple</span>' : rateDisplay}</td>
         <td class="text-end font-mono">${formatINR(inv.taxable_val)}</td>
-        <td class="text-end font-mono text-muted">${formatINR(tax)}</td>
+        <td class="text-end font-mono text-muted">${formatINR(inv.cgst)}</td>
+        <td class="text-end font-mono text-muted">${formatINR(inv.sgst)}</td>
+        <td class="text-end font-mono text-muted">${formatINR(inv.igst)}</td>
         <td class="text-end font-mono fw-bold text-dark">${formatINR(inv.total_val)}</td>
         <td class="text-center font-mono small">${statusBadge}</td>
       </tr>
@@ -1304,15 +1577,17 @@ async function triggerXmlGeneration() {
   btn.innerHTML = `<div class="spinner-border spinner-border-sm me-2" role="status"></div>Generating Consolidated XML...`;
 
   try {
-    const res = await fetch("/api/generate-xml", { method: "POST" });
+    const res = await fetch(`/api/generate-xml?return_type=${currentReturnType}`, { method: "POST" });
     const data = await res.json();
     if (data.status === "success") {
       container.classList.remove("d-none");
       document.getElementById("mastersFileName").textContent = data.masters_file;
-      document.getElementById("mastersFileSize").textContent = 
+      document.getElementById("mastersFileSize").textContent =
         `${(data.masters_size / 1024).toFixed(1)} KB • ${data.master_ledgers_count} Master Ledgers`;
-      
+      document.getElementById("mastersDownloadLink").href = `/api/download/${data.masters_file}`;
+
       document.getElementById("entriesFileName").textContent = data.entries_file;
+      document.getElementById("entriesDownloadLink").href = `/api/download/${data.entries_file}`;
       let entriesMeta = `${(data.entries_size / 1024).toFixed(1)} KB • ${data.vouchers_count.toLocaleString()} Vouchers`;
       if (data.rounded_count > 0) {
         entriesMeta += ` (${data.rounded_count} auto-balanced with Round Off)`;
@@ -1322,7 +1597,7 @@ async function triggerXmlGeneration() {
       }
       document.getElementById("entriesFileSize").textContent = entriesMeta;
 
-      showToast("Consolidated XML generated successfully!");
+      showToast(`Consolidated ${currentReturnType === "GSTR1" ? "Sales" : "Purchase"} XML generated successfully!`);
     } else {
       alert("Failed to generate XML: " + (data.detail || "Unknown error"));
     }
@@ -1354,7 +1629,7 @@ async function importToTally(target) {
     const res = await fetch("/api/import-tally", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target: target, endpoint: endpoint })
+      body: JSON.stringify({ target: target, endpoint: endpoint, return_type: currentReturnType })
     });
 
     const data = await safeJson(res);
@@ -1456,29 +1731,75 @@ async function uploadGstrFiles() {
   try {
     const clientId = activeClient.id;
     const clearExisting = document.getElementById("uploadClearExistingCheckbox") ? document.getElementById("uploadClearExistingCheckbox").checked : false;
-    const res = await fetch(`/api/upload?client_id=${clientId}&clear_existing=${clearExisting}`, {
+    await performUpload(formData, clientId, clearExisting, false, false);
+  } finally {
+    progress.classList.add("d-none");
+  }
+}
+
+// Split out so a 409 confirmation (GSTIN mismatch or duplicate periods) can retry the
+// exact same upload once the user has explicitly said to proceed, instead of the
+// server silently deciding for them.
+async function performUpload(formData, clientId, clearExisting, confirmNewClient, confirmDuplicatePeriods) {
+  const fileInput = document.getElementById("gstr1FileInput");
+  try {
+    const params = new URLSearchParams({
+      client_id: clientId,
+      clear_existing: clearExisting,
+      confirm_new_client: confirmNewClient,
+      confirm_duplicate_periods: confirmDuplicatePeriods
+    });
+    const res = await fetch(`/api/upload?${params.toString()}`, {
       method: "POST",
       body: formData
     });
-    const data = await res.json();
-    if (data.status === "success") {
-      showToast(`Uploaded ${data.uploaded_files.length} file(s) for ${activeClient ? activeClient.name : 'client'}!`);
+    const data = await safeJson(res);
+
+    if (res.ok && data.status === "success") {
+      const detected = Object.values(data.detected_types || {});
+      const salesCount = detected.filter(t => t === "GSTR1").length;
+      const purchCount = detected.filter(t => t === "GSTR2B").length;
+      let typesSummary = "";
+      if (salesCount && purchCount) typesSummary = ` (${salesCount} Sales, ${purchCount} Purchases detected)`;
+      else if (purchCount) typesSummary = " (detected as Purchases / GSTR-2B)";
+      else if (salesCount) typesSummary = " (detected as Sales / GSTR-1)";
+      showToast(`Uploaded ${data.uploaded_files.length} file(s) for ${activeClient ? activeClient.name : 'client'}!${typesSummary}`);
       const modal = bootstrap.Modal.getInstance(document.getElementById("uploadModal"));
       if (modal) modal.hide();
-      fileInput.value = "";
+      if (fileInput) fileInput.value = "";
       const clearCheck = document.getElementById("uploadClearExistingCheckbox");
       if (clearCheck) clearCheck.checked = false;
       await fetchClients();
       await fetchOverviewData();
       await fetchParties();
       await fetchInvoices(1);
-    } else {
-      alert("Upload failed: " + (data.detail || "Server error"));
+      return;
     }
+
+    const detail = data.detail;
+    if (!res.ok && detail && typeof detail === "object" && detail.error === "gstin_mismatch") {
+      const switchLine = detail.existing_client_match
+        ? `A client already exists for this GSTIN: '${detail.existing_client_match.name}'. Switch to it`
+        : `No client exists for this GSTIN yet. Create a new client`;
+      const proceed = confirm(`${detail.message}\n\n${switchLine} and upload there instead?`);
+      if (proceed) {
+        await performUpload(formData, clientId, clearExisting, true, confirmDuplicatePeriods);
+      }
+      return;
+    }
+
+    if (!res.ok && detail && typeof detail === "object" && detail.error === "duplicate_periods") {
+      const periodList = detail.duplicates.map(d => `- ${d.filename} (${d.return_type === "GSTR1" ? "Sales" : "Purchases"})`).join("\n");
+      const proceed = confirm(`${detail.message}\n\n${periodList}\n\nUpload anyway and add to the existing data?`);
+      if (proceed) {
+        await performUpload(formData, clientId, clearExisting, confirmNewClient, true);
+      }
+      return;
+    }
+
+    alert("Upload failed: " + (typeof detail === "string" ? detail : (detail && detail.message) || "Server error"));
   } catch (err) {
     alert("Upload error: " + err.message);
-  } finally {
-    progress.classList.add("d-none");
   }
 }
 
@@ -2034,4 +2355,403 @@ async function executeClearAllPartyMappings() {
     btn.disabled = false;
     btn.innerHTML = `<i class="fa-solid fa-trash-can me-1"></i> Yes, Reset All Mappings`;
   }
+}
+
+// ---------------------------------------------------------------------------
+// 10. GSTR-2B Portal Download (mirrors the GST Portal Verification pattern
+// above: a headless-Chrome session with its CAPTCHA relayed to this page)
+// ---------------------------------------------------------------------------
+let gstr2bPollingInterval = null;
+let lastG2bCaptchaImageB64 = null;
+let currentG2bTab = 'setup';
+
+const FISCAL_MONTHS = [
+  { m: 4, label: "April" }, { m: 5, label: "May" }, { m: 6, label: "June" },
+  { m: 7, label: "July" }, { m: 8, label: "August" }, { m: 9, label: "September" },
+  { m: 10, label: "October" }, { m: 11, label: "November" }, { m: 12, label: "December" },
+  { m: 1, label: "January" }, { m: 2, label: "February" }, { m: 3, label: "March" }
+];
+
+function renderGstr2bMonthCheckboxes() {
+  const grid = document.getElementById("g2bMonthCheckboxGrid");
+  if (!grid) return;
+  grid.innerHTML = FISCAL_MONTHS.map(({ m, label }) => `
+    <div class="col-md-3 col-sm-4 col-6">
+      <div class="form-check card p-2 h-100 shadow-xs border">
+        <input class="form-check-input ms-1 me-2 g2b-month-check" type="checkbox" value="${m}" id="g2bMonth${m}">
+        <label class="form-check-label small fw-semibold" for="g2bMonth${m}">${label}</label>
+      </div>
+    </div>
+  `).join("");
+}
+
+function toggleAllGstr2bMonths() {
+  const boxes = document.querySelectorAll(".g2b-month-check");
+  const allChecked = Array.from(boxes).every(el => el.checked);
+  boxes.forEach(el => { el.checked = !allChecked; });
+}
+
+async function openGstr2bDownloadModal() {
+  if (!activeClient) {
+    alert("Please select an active taxpayer client before downloading GSTR-2B from the portal.");
+    switchToTab("clients-tab");
+    return;
+  }
+
+  const modalEl = document.getElementById("gstr2bDownloadModal");
+  if (!modalEl) return;
+
+  renderGstr2bMonthCheckboxes();
+  syncGstr2bScopeData();
+
+  try {
+    const res = await fetch("/api/gstr2b/download/status");
+    const data = await res.json();
+    if (data.is_running) {
+      switchGstr2bDownloadView('progress');
+      updateGstr2bUIFromState(data);
+      startGstr2bPolling();
+    } else {
+      switchGstr2bDownloadView('setup');
+      if (data.results && data.results.length > 0) {
+        renderGstr2bResults(data.results);
+      }
+    }
+  } catch (err) {
+    switchGstr2bDownloadView('setup');
+  }
+
+  const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+  modal.show();
+}
+
+function syncGstr2bScopeData() {
+  const nameEl = document.getElementById("g2bActiveClientName");
+  const gstinEl = document.getElementById("g2bActiveClientGstin");
+  const fyEl = document.getElementById("g2bActiveClientFY");
+  const warnEl = document.getElementById("g2bNoFyWarning");
+  const startBtn = document.getElementById("g2bStartBtn");
+
+  if (activeClient) {
+    if (nameEl) nameEl.textContent = activeClient.name;
+    if (gstinEl) gstinEl.textContent = activeClient.gstin;
+    if (fyEl) fyEl.textContent = `FY: ${activeClient.financial_year || 'Not set'}`;
+  }
+
+  const hasFy = Boolean(activeClient && activeClient.financial_year);
+  if (warnEl) warnEl.classList.toggle("d-none", hasFy);
+  if (startBtn) startBtn.disabled = !hasFy;
+
+  const userEl = document.getElementById("g2bGstUsername");
+  const passEl = document.getElementById("g2bGstPassword");
+  if (userEl) userEl.value = (activeClient && activeClient.gst_username) ? activeClient.gst_username : "";
+  if (passEl) passEl.value = (activeClient && activeClient.gst_password) ? activeClient.gst_password : "";
+}
+
+function switchGstr2bDownloadView(tab) {
+  currentG2bTab = tab;
+  const setupSec = document.getElementById("g2bSetupSection");
+  const progSec = document.getElementById("g2bProgressSection");
+  const tabSetupBtn = document.getElementById("g2bTabSetupBtn");
+  const tabProgBtn = document.getElementById("g2bTabProgressBtn");
+  const backFooterBtn = document.getElementById("g2bBackToSetupFooterBtn");
+  const startBtn = document.getElementById("g2bStartBtn");
+
+  if (tab === 'setup') {
+    if (setupSec) setupSec.classList.remove("d-none");
+    if (progSec) progSec.classList.add("d-none");
+    if (tabSetupBtn) tabSetupBtn.classList.add("active");
+    if (tabProgBtn) tabProgBtn.classList.remove("active");
+    if (backFooterBtn) backFooterBtn.classList.add("d-none");
+    if (startBtn) startBtn.classList.remove("d-none");
+  } else {
+    if (setupSec) setupSec.classList.add("d-none");
+    if (progSec) progSec.classList.remove("d-none");
+    if (tabSetupBtn) tabSetupBtn.classList.remove("active");
+    if (tabProgBtn) tabProgBtn.classList.add("active");
+    if (backFooterBtn) backFooterBtn.classList.remove("d-none");
+  }
+}
+
+async function startGstr2bDownload() {
+  const checked = Array.from(document.querySelectorAll(".g2b-month-check:checked")).map(el => parseInt(el.value, 10));
+  if (checked.length === 0) {
+    alert("Please select at least one month to download.");
+    return;
+  }
+
+  const payload = { months: checked };
+  const user = document.getElementById("g2bGstUsername") ? document.getElementById("g2bGstUsername").value.trim() : "";
+  const pass = document.getElementById("g2bGstPassword") ? document.getElementById("g2bGstPassword").value.trim() : "";
+  if (user) payload.gst_username = user;
+  if (pass) payload.gst_password = pass;
+
+  const startBtn = document.getElementById("g2bStartBtn");
+  startBtn.disabled = true;
+  startBtn.innerHTML = `<div class="spinner-border spinner-border-sm me-1"></div> Starting...`;
+
+  try {
+    const res = await fetch("/api/gstr2b/download/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const data = await safeJson(res);
+    if (!res.ok) {
+      alert(data.detail || "Error starting GSTR-2B download");
+      startBtn.disabled = false;
+      startBtn.innerHTML = `<i class="fa-solid fa-play me-1"></i> Launch Chrome & Download`;
+      return;
+    }
+
+    showToast(`GSTR-2B download launched for ${data.total} month(s) of FY ${data.fy}! Chrome opening...`);
+    switchGstr2bDownloadView('progress');
+    const completeBanner = document.getElementById("g2bCompleteBanner");
+    if (completeBanner) completeBanner.classList.add("d-none");
+
+    startGstr2bPolling();
+  } catch (err) {
+    alert("Network error: " + err.message);
+    startBtn.disabled = false;
+    startBtn.innerHTML = `<i class="fa-solid fa-play me-1"></i> Launch Chrome & Download`;
+  }
+}
+
+function startGstr2bPolling() {
+  if (gstr2bPollingInterval) clearInterval(gstr2bPollingInterval);
+  gstr2bPollingInterval = setInterval(async () => {
+    try {
+      const res = await fetch("/api/gstr2b/download/status");
+      const data = await res.json();
+      updateGstr2bUIFromState(data);
+
+      if (!data.is_running && data.status !== "starting") {
+        clearInterval(gstr2bPollingInterval);
+        gstr2bPollingInterval = null;
+        await fetchOverviewData();
+        await fetchInvoices(currentPage);
+        await fetchParties();
+      }
+    } catch (err) {
+      console.error("Polling error:", err);
+    }
+  }, 1000);
+}
+
+function updateGstr2bUIFromState(state) {
+  if (!state) return;
+
+  const pill = document.getElementById("g2bStatusPill");
+  const pBar = document.getElementById("g2bProgressBar");
+  const pLabel = document.getElementById("g2bProgressLabel");
+  const pCounter = document.getElementById("g2bProgressCounter");
+  const terminal = document.getElementById("g2bLogTerminal");
+  const captchaSection = document.getElementById("g2bCaptchaSection");
+  const captchaImg = document.getElementById("g2bCaptchaImage");
+  const captchaInput = document.getElementById("g2bCaptchaInput");
+  const captchaSubmitBtn = document.getElementById("g2bCaptchaSubmitBtn");
+  const completeBanner = document.getElementById("g2bCompleteBanner");
+  const cancelBtn = document.getElementById("g2bCancelBtn");
+  const startBtn = document.getElementById("g2bStartBtn");
+
+  const statusLabels = {
+    "idle": "Idle - Ready to start",
+    "starting": "Launching headless Chrome & logging in...",
+    "waiting_captcha": "Enter the CAPTCHA shown below",
+    "navigating": "Navigating to Returns Dashboard...",
+    "downloading": `Downloading: ${state.current_month || 'Return'}...`,
+    "completed": "Download Complete! Data imported into Purchases.",
+    "error": "Error encountered",
+    "cancelled": "Download cancelled"
+  };
+
+  const statusColors = {
+    "idle": "bg-secondary",
+    "starting": "bg-info text-dark",
+    "waiting_captcha": "bg-warning text-dark",
+    "navigating": "bg-primary",
+    "downloading": "bg-teal text-white",
+    "completed": "bg-success text-white",
+    "error": "bg-danger text-white",
+    "cancelled": "bg-dark text-white"
+  };
+
+  if (pill) {
+    pill.textContent = statusLabels[state.status] || state.status;
+    pill.className = `badge ${statusColors[state.status] || 'bg-secondary'}`;
+  }
+
+  if (state.is_running && currentG2bTab !== 'progress') {
+    switchGstr2bDownloadView('progress');
+  }
+
+  const total = state.total || 1;
+  const prog = state.progress || 0;
+  const pct = Math.min(100, Math.round((prog / total) * 100));
+  if (pBar) pBar.style.width = `${pct}%`;
+  if (pCounter) pCounter.textContent = `${prog} / ${state.total || 0}`;
+  if (pLabel) {
+    pLabel.textContent = state.status === "downloading"
+      ? `Downloading ${state.current_month}...`
+      : (statusLabels[state.status] || state.status);
+  }
+
+  if (captchaSection) {
+    if (state.status === "waiting_captcha" && state.captcha_image_b64) {
+      captchaSection.classList.remove("d-none");
+      if (captchaImg && state.captcha_image_b64 !== lastG2bCaptchaImageB64) {
+        captchaImg.src = `data:image/png;base64,${state.captcha_image_b64}`;
+        lastG2bCaptchaImageB64 = state.captcha_image_b64;
+        if (captchaInput) { captchaInput.value = ""; captchaInput.disabled = false; captchaInput.focus(); }
+        if (captchaSubmitBtn) captchaSubmitBtn.disabled = false;
+      }
+    } else {
+      captchaSection.classList.add("d-none");
+      lastG2bCaptchaImageB64 = null;
+    }
+  }
+
+  if (completeBanner) {
+    completeBanner.classList.toggle("d-none", state.status !== "completed");
+  }
+
+  if (cancelBtn && startBtn) {
+    if (state.is_running) {
+      cancelBtn.classList.remove("d-none");
+      startBtn.classList.add("d-none");
+    } else {
+      cancelBtn.classList.add("d-none");
+      startBtn.classList.remove("d-none");
+      startBtn.disabled = false;
+      startBtn.innerHTML = `<i class="fa-solid fa-play me-1"></i> Launch Chrome & Download`;
+    }
+  }
+
+  if (terminal && state.logs) {
+    terminal.innerHTML = state.logs.map(l => `<div>${l}</div>`).join("");
+    terminal.scrollTop = terminal.scrollHeight;
+  }
+
+  if (state.results) {
+    renderGstr2bResults(state.results);
+  }
+}
+
+function renderGstr2bResults(results) {
+  const body = document.getElementById("g2bResultsBody");
+  if (!body) return;
+  if (!results || results.length === 0) {
+    body.innerHTML = `<tr><td colspan="3" class="text-center text-muted py-2">No results yet.</td></tr>`;
+    return;
+  }
+  body.innerHTML = results.map(r => `
+    <tr>
+      <td class="fw-semibold text-dark">${r.month}</td>
+      <td>
+        ${r.status && r.status.startsWith('Downloaded')
+          ? `<span class="badge bg-success"><i class="fa-solid fa-check me-1"></i>${r.status}</span>`
+          : (r.status && r.status.startsWith('No GSTR-2B')
+            ? `<span class="badge bg-secondary">${r.status}</span>`
+            : `<span class="badge bg-danger">${r.status || 'Failed'}</span>`)}
+      </td>
+      <td class="text-center font-mono">${r.doc_count || 0}</td>
+    </tr>
+  `).join("");
+}
+
+async function submitGstr2bCaptcha() {
+  const input = document.getElementById("g2bCaptchaInput");
+  const btn = document.getElementById("g2bCaptchaSubmitBtn");
+  const answer = input ? input.value.trim() : "";
+  if (!answer) {
+    if (input) input.focus();
+    return;
+  }
+  if (input) input.disabled = true;
+  if (btn) btn.disabled = true;
+  try {
+    await fetch("/api/gstr2b/download/submit-captcha", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ answer })
+    });
+    showToast("CAPTCHA submitted. Logging in...");
+  } catch (err) {
+    console.error("Error submitting CAPTCHA:", err);
+    if (input) input.disabled = false;
+    if (btn) btn.disabled = false;
+  }
+}
+
+function onGstr2bCaptchaInputKeydown(event) {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    submitGstr2bCaptcha();
+  }
+}
+
+async function cancelGstr2bDownload() {
+  try {
+    await fetch("/api/gstr2b/download/cancel", { method: "POST" });
+    showToast("GSTR-2B download cancelled.");
+    if (gstr2bPollingInterval) clearInterval(gstr2bPollingInterval);
+    gstr2bPollingInterval = null;
+    const res = await fetch("/api/gstr2b/download/status");
+    updateGstr2bUIFromState(await res.json());
+  } catch (err) {
+    console.error("Error cancelling:", err);
+  }
+}
+
+async function resetGstr2bDownloadModal() {
+  try {
+    await fetch("/api/gstr2b/download/reset", { method: "POST" });
+  } catch (e) {
+    console.warn("Reset error:", e);
+  }
+  if (gstr2bPollingInterval) {
+    clearInterval(gstr2bPollingInterval);
+    gstr2bPollingInterval = null;
+  }
+  const pBar = document.getElementById("g2bProgressBar");
+  if (pBar) pBar.style.width = "0%";
+  const pCounter = document.getElementById("g2bProgressCounter");
+  if (pCounter) pCounter.textContent = "0 / 0";
+  const pLabel = document.getElementById("g2bProgressLabel");
+  if (pLabel) pLabel.textContent = "Ready to start";
+  const statusPill = document.getElementById("g2bStatusPill");
+  if (statusPill) {
+    statusPill.textContent = "Idle - Ready to start";
+    statusPill.className = "badge bg-secondary";
+  }
+  const completeBanner = document.getElementById("g2bCompleteBanner");
+  if (completeBanner) completeBanner.classList.add("d-none");
+  const captchaSection = document.getElementById("g2bCaptchaSection");
+  if (captchaSection) captchaSection.classList.add("d-none");
+  const captchaInput = document.getElementById("g2bCaptchaInput");
+  if (captchaInput) { captchaInput.value = ""; captchaInput.disabled = false; }
+  lastG2bCaptchaImageB64 = null;
+  const terminal = document.getElementById("g2bLogTerminal");
+  if (terminal) terminal.innerHTML = "<div>Session reset. Waiting to launch...</div>";
+  const resBody = document.getElementById("g2bResultsBody");
+  if (resBody) resBody.innerHTML = '<tr><td colspan="3" class="text-center text-muted py-2">No results yet.</td></tr>';
+  const startBtn = document.getElementById("g2bStartBtn");
+  if (startBtn) {
+    startBtn.disabled = false;
+    startBtn.classList.remove("d-none");
+    startBtn.innerHTML = '<i class="fa-solid fa-play me-1"></i> Launch Chrome & Download';
+  }
+  const cancelBtn = document.getElementById("g2bCancelBtn");
+  if (cancelBtn) cancelBtn.classList.add("d-none");
+
+  syncGstr2bScopeData();
+  switchGstr2bDownloadView('setup');
+}
+
+function onCloseGstr2bDownloadModal() {
+  if (gstr2bPollingInterval) {
+    clearInterval(gstr2bPollingInterval);
+    gstr2bPollingInterval = null;
+  }
+  switchGstr2bDownloadView('setup');
 }

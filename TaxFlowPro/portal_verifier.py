@@ -53,15 +53,22 @@ STATE_CODES = {
 }
 
 
-def _initialize_driver() -> webdriver.Chrome:
-    """Initializes headless Chrome. This exact configuration (headless=new + the
+def _initialize_driver(download_dir: Optional[str] = None, headless: bool = True) -> webdriver.Chrome:
+    """Initializes Chrome. This exact configuration (headless=new + the
     navigator.webdriver patch) was validated against the live GST portal in
-    gst_headless_captcha_poc.py before being wired into the app."""
+    gst_headless_captcha_poc.py before being wired into the app.
+
+    Pass `download_dir` to make Chrome silently save downloads there instead of
+    prompting - used by gstr2b_portal_downloader.py to pull JSON returns.
+
+    Pass `headless=False` to open a visible window instead - useful for watching
+    a run live while debugging a new automation flow."""
     import tempfile
     temp_profile_dir = tempfile.mkdtemp(prefix="gst_chrome_clean_")
 
     options = webdriver.ChromeOptions()
-    options.add_argument("--headless=new")
+    if headless:
+        options.add_argument("--headless=new")
     options.add_argument(f"--user-data-dir={temp_profile_dir}")
     options.add_argument("--window-size=1366,900")
     options.add_argument("--no-sandbox")
@@ -81,6 +88,13 @@ def _initialize_driver() -> webdriver.Chrome:
         "profile.password_manager_enabled": False,
         "profile.default_content_setting_values.notifications": 2,
     }
+    if download_dir:
+        prefs.update({
+            "download.default_directory": download_dir,
+            "download.prompt_for_download": False,
+            "download.directory_upgrade": True,
+            "safebrowsing.enabled": True,
+        })
     options.add_experimental_option("prefs", prefs)
 
     driver = None
@@ -103,6 +117,13 @@ def _initialize_driver() -> webdriver.Chrome:
     driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
         "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
     })
+    if download_dir:
+        # Headless Chrome blocks downloads by default regardless of the prefs above -
+        # this CDP command is the only thing that actually allows them through.
+        driver.execute_cdp_cmd("Page.setDownloadBehavior", {
+            "behavior": "allow",
+            "downloadPath": download_dir
+        })
     driver.set_page_load_timeout(60)
     return driver
 
@@ -147,8 +168,12 @@ def _capture_captcha_image(driver: webdriver.Chrome, wait: WebDriverWait) -> Opt
 
 
 def _submit_captcha_and_login(driver: webdriver.Chrome, answer: str):
-    """Types the CAPTCHA answer into the login form and submits it."""
-    cap_elem = driver.find_element(By.ID, "captcha")
+    """Types the CAPTCHA answer into the login form and submits it. Waits briefly
+    for the field rather than a bare find_element: the portal can silently
+    re-render the CAPTCHA table (e.g. after a slow answer) between capturing the
+    image and submitting the answer, and a bare lookup mid-re-render throws
+    NoSuchElementException even though the field reappears a moment later."""
+    cap_elem = WebDriverWait(driver, 8).until(EC.presence_of_element_located((By.ID, "captcha")))
     cap_elem.clear()
     cap_elem.send_keys(answer)
     driver.execute_script(

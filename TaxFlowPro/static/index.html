@@ -8,10 +8,10 @@
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <!-- FontAwesome -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-  <!-- Type system: Manrope (brand/headings), Inter (body/UI), IBM Plex Mono (financial figures) -->
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@600;700;800&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap">
+  <!-- Type system: the OS's own UI font (Segoe UI on Windows), Arial as the fallback -
+       no web fonts, so the app doesn't depend on internet access just to render text. -->
   <!-- Custom CSS -->
-  <link rel="stylesheet" href="style.css?v=2.3.0">
+  <link rel="stylesheet" href="style.css?v=2.4.0">
 </head>
 <body>
 
@@ -45,6 +45,21 @@
 
   <!-- Main Container -->
   <main class="container-fluid px-4 py-4">
+
+    <!-- KPI scope header: makes it unambiguous which dataset the strip below is
+         showing, since the strip appears on every tab and just reflects whatever
+         Sales/Purchases toggle was last touched anywhere in the app. -->
+    <div class="d-flex align-items-center justify-content-between mb-2 d-none" id="kpiMetricsHeader">
+      <span class="small text-muted">
+        Showing: <strong class="text-dark" id="kpiReturnTypeLabel">Sales (GSTR-1)</strong>
+      </span>
+      <div class="btn-group btn-group-sm" role="group" aria-label="Return type">
+        <input type="radio" class="btn-check" name="rtToggleKpi" id="rtKpiSales" checked onchange="setReturnType('GSTR1')">
+        <label class="btn btn-outline-teal" for="rtKpiSales"><i class="fa-solid fa-arrow-up-right-from-square me-1"></i>Sales</label>
+        <input type="radio" class="btn-check" name="rtToggleKpi" id="rtKpiPurchases" onchange="setReturnType('GSTR2B')">
+        <label class="btn btn-outline-teal" for="rtKpiPurchases"><i class="fa-solid fa-arrow-down-left-from-circle me-1"></i>Purchases</label>
+      </div>
+    </div>
 
     <!-- KPI Metrics Strip (Visible only when an active client is selected).
          Full cards on Client Management / Monthly Breakdown; collapses to a slim
@@ -194,66 +209,6 @@
               </div>
             </div>
 
-            <!-- System Overview Strip (Always visible on dashboard) -->
-            <div class="row g-3 mb-4" id="dashboardSystemStats">
-              <div class="col-xl-3 col-md-6">
-                <div class="card border shadow-xs p-3 bg-white h-100">
-                  <div class="d-flex align-items-center justify-content-between">
-                    <div>
-                      <div class="text-muted small fw-semibold text-uppercase" style="font-size: 0.72rem;">Registered Clients</div>
-                      <div class="fs-4 fw-bold text-dark mt-1" id="dashTotalClients">0</div>
-                      <div class="small text-muted" style="font-size: 0.72rem;" id="dashActiveClientsText">0 Active</div>
-                    </div>
-                    <div class="metric-icon-box bg-primary-subtle text-primary">
-                      <i class="fa-solid fa-building-user"></i>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div class="col-xl-3 col-md-6">
-                <div class="card border shadow-xs p-3 bg-white h-100">
-                  <div class="d-flex align-items-center justify-content-between">
-                    <div>
-                      <div class="text-muted small fw-semibold text-uppercase" style="font-size: 0.72rem;">Filing Periods Ingested</div>
-                      <div class="fs-4 fw-bold text-teal-dark mt-1" id="dashTotalPeriods">0</div>
-                      <div class="small text-muted" style="font-size: 0.72rem;">Across all clients</div>
-                    </div>
-                    <div class="metric-icon-box bg-teal-subtle text-teal">
-                      <i class="fa-solid fa-calendar-check"></i>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div class="col-xl-3 col-md-6">
-                <div class="card border shadow-xs p-3 bg-white h-100">
-                  <div class="d-flex align-items-center justify-content-between">
-                    <div>
-                      <div class="text-muted small fw-semibold text-uppercase" style="font-size: 0.72rem;">Total Vouchers Ingested</div>
-                      <div class="fs-4 fw-bold text-info mt-1" id="dashTotalDocs">0</div>
-                      <div class="small text-muted" style="font-size: 0.72rem;">Sales, B2C, B2C Large, Exports, Advances, Credit/Debit Notes</div>
-                    </div>
-                    <div class="metric-icon-box bg-info-subtle text-info">
-                      <i class="fa-solid fa-receipt"></i>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div class="col-xl-3 col-md-6">
-                <div class="card border shadow-xs p-3 bg-white h-100">
-                  <div class="d-flex align-items-center justify-content-between">
-                    <div>
-                      <div class="text-muted small fw-semibold text-uppercase" style="font-size: 0.72rem;">Cumulative Turnover</div>
-                      <div class="fs-4 fw-bold text-success mt-1" id="dashTotalTurnover">₹0</div>
-                      <div class="small text-muted" style="font-size: 0.72rem;">Total Taxable Business</div>
-                    </div>
-                    <div class="metric-icon-box bg-success-subtle text-success">
-                      <i class="fa-solid fa-chart-line"></i>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
             <!-- Active Client Highlight Banner (Visible only when client is selected) -->
             <div id="activeClientHeroBanner" class="p-3 mb-4 rounded-3 border bg-light position-relative d-none border-teal">
               <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
@@ -277,9 +232,6 @@
                   </div>
                 </div>
                 <div class="d-flex align-items-center flex-wrap gap-2">
-                  <button class="btn btn-teal btn-sm fw-semibold" onclick="openUploadModal()">
-                    <i class="fa-solid fa-cloud-arrow-up me-1"></i> Upload Returns
-                  </button>
                   <button class="btn btn-outline-primary btn-sm" onclick="switchToTab('overview-tab')">
                     <i class="fa-solid fa-calendar-days me-1"></i> Returns (Tab 2)
                   </button>
@@ -333,38 +285,47 @@
 
             <!-- Content Container (Shown when client selected) -->
             <div id="overviewContent" class="d-none">
-              <div class="d-flex align-items-center justify-content-between mb-3">
+              <div class="d-flex align-items-center justify-content-between mb-3 flex-wrap gap-2">
                 <div>
-                  <h5 class="fw-bold mb-1">Financial Year GSTR-1 Ingestion Summary</h5>
+                  <h5 class="fw-bold mb-1">Financial Year Return Ingestion Summary</h5>
                   <p class="text-muted small mb-0">Consolidated breakdown of return periods for <strong id="companyGstinTitle" class="text-teal-dark">-</strong> (<span id="companyNameTitle">No Taxpayer Client</span>)</p>
                 </div>
-                <div class="d-flex gap-2">
+                <div class="d-flex gap-2 align-items-center flex-wrap">
+                  <div class="btn-group btn-group-sm" role="group" aria-label="Return type">
+                    <input type="radio" class="btn-check" name="rtToggleOverview" id="rtOverviewSales" checked onchange="setReturnType('GSTR1')">
+                    <label class="btn btn-outline-teal" for="rtOverviewSales"><i class="fa-solid fa-arrow-up-right-from-square me-1"></i>Sales (GSTR-1)</label>
+                    <input type="radio" class="btn-check" name="rtToggleOverview" id="rtOverviewPurchases" onchange="setReturnType('GSTR2B')">
+                    <label class="btn btn-outline-teal" for="rtOverviewPurchases"><i class="fa-solid fa-arrow-down-left-from-circle me-1"></i>Purchases (GSTR-2B)</label>
+                  </div>
                   <button class="btn btn-teal btn-sm fw-semibold" onclick="openUploadModal()">
                     <i class="fa-solid fa-cloud-arrow-up me-1"></i> Upload Returns
                   </button>
-                  <button class="btn btn-outline-danger btn-sm" onclick="clearClientReturnsPrompt()" title="Clear all uploaded return files for this client">
+                  <button class="btn btn-outline-primary btn-sm fw-semibold" onclick="openGstr2bDownloadModal()" title="Login to the GST Portal and fetch GSTR-2B JSON directly, month by month">
+                    <i class="fa-solid fa-cloud-arrow-down me-1"></i> Download GSTR-2B from Portal
+                  </button>
+                  <button class="btn btn-outline-danger btn-sm" onclick="clearClientReturnsPrompt()" title="Clear all uploaded return files for this client and return type">
                     <i class="fa-solid fa-trash-can me-1"></i> Clear Returns
                   </button>
                 </div>
               </div>
 
-              <div class="table-responsive">
+              <div class="table-responsive table-scroll">
                 <table class="table table-hover align-middle monthly-table">
                   <thead class="table-light">
                     <tr>
-                      <th>Month / Return Period</th>
-                      <th class="text-center">Total Docs</th>
-                      <th class="text-center">B2B</th>
-                      <th class="text-center">B2C</th>
-                      <th class="text-center">CDNR</th>
-                      <th class="text-center">EXP</th>
-                      <th class="text-center">ADV</th>
-                      <th class="text-center">Parties</th>
-                      <th class="text-end">Taxable Value (₹)</th>
-                      <th class="text-end">CGST (₹)</th>
-                      <th class="text-end">SGST (₹)</th>
-                      <th class="text-end">IGST (₹)</th>
-                      <th class="text-end">Total Value (₹)</th>
+                      <th class="sortable-th" onclick="sortMonthlyTable('label')">Month / Return Period<i class="fa-solid fa-sort sort-icon" id="monthlySortIcon-label"></i></th>
+                      <th class="text-center sortable-th" onclick="sortMonthlyTable('total_docs')">Total Docs<i class="fa-solid fa-sort sort-icon" id="monthlySortIcon-total_docs"></i></th>
+                      <th class="text-center sortable-th" id="thMonthlyCol2" onclick="sortMonthlyTable('col0')"><span class="col-label">B2B</span><i class="fa-solid fa-sort sort-icon" id="monthlySortIcon-col0"></i></th>
+                      <th class="text-center sortable-th" id="thMonthlyCol3" onclick="sortMonthlyTable('col1')"><span class="col-label">B2C</span><i class="fa-solid fa-sort sort-icon" id="monthlySortIcon-col1"></i></th>
+                      <th class="text-center sortable-th" id="thMonthlyCol4" onclick="sortMonthlyTable('col2')"><span class="col-label">CDNR</span><i class="fa-solid fa-sort sort-icon" id="monthlySortIcon-col2"></i></th>
+                      <th class="text-center sortable-th" id="thMonthlyCol5" onclick="sortMonthlyTable('col3')"><span class="col-label">EXP</span><i class="fa-solid fa-sort sort-icon" id="monthlySortIcon-col3"></i></th>
+                      <th class="text-center sortable-th" id="thMonthlyCol6" onclick="sortMonthlyTable('col4')"><span class="col-label">ADV</span><i class="fa-solid fa-sort sort-icon" id="monthlySortIcon-col4"></i></th>
+                      <th class="text-center sortable-th" onclick="sortMonthlyTable('parties_count')">Parties<i class="fa-solid fa-sort sort-icon" id="monthlySortIcon-parties_count"></i></th>
+                      <th class="text-end sortable-th" onclick="sortMonthlyTable('taxable_val')">Taxable Value (₹)<i class="fa-solid fa-sort sort-icon" id="monthlySortIcon-taxable_val"></i></th>
+                      <th class="text-end sortable-th" onclick="sortMonthlyTable('cgst_val')">CGST (₹)<i class="fa-solid fa-sort sort-icon" id="monthlySortIcon-cgst_val"></i></th>
+                      <th class="text-end sortable-th" onclick="sortMonthlyTable('sgst_val')">SGST (₹)<i class="fa-solid fa-sort sort-icon" id="monthlySortIcon-sgst_val"></i></th>
+                      <th class="text-end sortable-th" onclick="sortMonthlyTable('igst_val')">IGST (₹)<i class="fa-solid fa-sort sort-icon" id="monthlySortIcon-igst_val"></i></th>
+                      <th class="text-end sortable-th" onclick="sortMonthlyTable('total_val')">Total Value (₹)<i class="fa-solid fa-sort sort-icon" id="monthlySortIcon-total_val"></i></th>
                       <th class="text-center">Action</th>
                     </tr>
                   </thead>
@@ -402,6 +363,18 @@
 
             <!-- Content Container (Shown when client selected) -->
             <div id="partiesContent" class="d-none">
+              <div class="d-flex align-items-center gap-2 mb-2">
+                <span class="small text-muted fw-semibold">View:</span>
+                <div class="btn-group btn-group-sm" role="group" aria-label="Ledger relation filter">
+                  <input type="radio" class="btn-check" name="rtToggleParties" id="rtPartiesAll" checked onchange="filterParties()">
+                  <label class="btn btn-outline-teal" for="rtPartiesAll">All</label>
+                  <input type="radio" class="btn-check" name="rtToggleParties" id="rtPartiesSales" onchange="filterParties()">
+                  <label class="btn btn-outline-teal" for="rtPartiesSales"><i class="fa-solid fa-arrow-up-right-from-square me-1"></i>Sales (GSTR-1)</label>
+                  <input type="radio" class="btn-check" name="rtToggleParties" id="rtPartiesPurchases" onchange="filterParties()">
+                  <label class="btn btn-outline-teal" for="rtPartiesPurchases"><i class="fa-solid fa-arrow-down-left-from-circle me-1"></i>Purchases (GSTR-2B)</label>
+                </div>
+                <span class="small text-muted fst-italic">GSTINs appearing in both stay visible under either toggle</span>
+              </div>
               <div class="row align-items-center mb-3 g-2">
                 <div class="col-md-4">
                   <h5 class="fw-bold mb-1">Counterparty Master Ledgers</h5>
@@ -453,17 +426,17 @@
                 </div>
               </div>
 
-              <div class="table-responsive">
+              <div class="table-responsive table-scroll">
                 <table class="table table-hover align-middle party-table">
                   <thead class="table-light">
                     <tr>
                       <th>#</th>
-                      <th>GSTIN</th>
-                      <th>Trade Name</th>
-                      <th>Legal Name</th>
-                      <th>State</th>
-                      <th>Tally Ledger Name (Current Preference)</th>
-                      <th class="text-center">Status</th>
+                      <th class="sortable-th" onclick="sortParties('gstin')">GSTIN<i class="fa-solid fa-sort sort-icon" id="partySortIcon-gstin"></i></th>
+                      <th class="sortable-th" onclick="sortParties('trade_name')">Trade Name<i class="fa-solid fa-sort sort-icon" id="partySortIcon-trade_name"></i></th>
+                      <th class="sortable-th" onclick="sortParties('legal_name')">Legal Name<i class="fa-solid fa-sort sort-icon" id="partySortIcon-legal_name"></i></th>
+                      <th class="sortable-th" onclick="sortParties('state_name')">State<i class="fa-solid fa-sort sort-icon" id="partySortIcon-state_name"></i></th>
+                      <th class="sortable-th" onclick="sortParties('ledger_name')">Tally Ledger Name (Current Preference)<i class="fa-solid fa-sort sort-icon" id="partySortIcon-ledger_name"></i></th>
+                      <th class="text-center sortable-th" onclick="sortParties('is_verified')">Status<i class="fa-solid fa-sort sort-icon" id="partySortIcon-is_verified"></i></th>
                       <th class="text-center">Action</th>
                     </tr>
                   </thead>
@@ -500,10 +473,21 @@
 
             <!-- Content Container (Shown when client selected) -->
             <div id="invoicesContent" class="d-none">
+              <div class="d-flex justify-content-between align-items-center mb-2">
+                <div class="btn-group btn-group-sm" role="group" aria-label="Return type">
+                  <input type="radio" class="btn-check" name="rtToggleInvoices" id="rtInvoicesSales" checked onchange="setReturnType('GSTR1')">
+                  <label class="btn btn-outline-teal" for="rtInvoicesSales"><i class="fa-solid fa-arrow-up-right-from-square me-1"></i>Sales (GSTR-1)</label>
+                  <input type="radio" class="btn-check" name="rtToggleInvoices" id="rtInvoicesPurchases" onchange="setReturnType('GSTR2B')">
+                  <label class="btn btn-outline-teal" for="rtInvoicesPurchases"><i class="fa-solid fa-arrow-down-left-from-circle me-1"></i>Purchases (GSTR-2B)</label>
+                </div>
+                <button class="btn btn-outline-success btn-sm fw-semibold" onclick="exportInvoicesToExcel()" title="Export every transaction matching the current search/filters as an Excel file">
+                  <i class="fa-solid fa-file-excel me-1"></i> Export to Excel
+                </button>
+              </div>
               <div class="row align-items-center mb-3 g-2">
                 <div class="col-md-4">
                   <h5 class="fw-bold mb-1">Normalized Transactions Explorer</h5>
-                  <p class="text-muted small mb-0">Every sales invoice, B2C/B2C Large summary, export, advance-tax entry & credit/debit note</p>
+                  <p class="text-muted small mb-0" id="invoicesSubtitle">Every sales invoice, B2C/B2C Large summary, export, advance-tax entry & credit/debit note</p>
                 </div>
                 <div class="col-md-6">
                   <div class="input-group input-group-sm">
@@ -511,12 +495,6 @@
                     <input type="text" id="invSearchInput" class="form-control" placeholder="Search invoice, GSTIN, party..." onkeyup="filterInvoices()">
                     <select id="invTypeFilter" class="form-select" style="max-width: 130px;" onchange="filterInvoices()">
                       <option value="">All Types</option>
-                      <option value="B2B">B2B Sales</option>
-                      <option value="B2CL">B2C Large</option>
-                      <option value="B2CS">B2C Retail</option>
-                      <option value="EXP">Exports</option>
-                      <option value="ADVANCE">Advances</option>
-                      <option value="CDNR">Credit/Debit Notes</option>
                     </select>
                     <select id="invStatusFilter" class="form-select" style="max-width: 140px;" onchange="filterInvoices()">
                       <option value="">All Balances</option>
@@ -532,25 +510,27 @@
                 </div>
               </div>
 
-              <div class="table-responsive">
+              <div class="table-responsive table-scroll">
                 <table class="table table-hover align-middle invoice-table">
                   <thead class="table-light">
                     <tr>
-                      <th>Type</th>
-                      <th>Doc Number</th>
-                      <th>Date</th>
-                      <th>Party Ledger / Customer</th>
-                      <th>GSTIN</th>
-                      <th class="text-center">Rate</th>
-                      <th class="text-end">Taxable Value (₹)</th>
-                      <th class="text-end">GST (₹)</th>
-                      <th class="text-end">Invoice Total (₹)</th>
+                      <th class="sortable-th" onclick="sortInvoices('doc_type')">Type<i class="fa-solid fa-sort sort-icon" id="invSortIcon-doc_type"></i></th>
+                      <th class="sortable-th" onclick="sortInvoices('doc_number')">Doc Number<i class="fa-solid fa-sort sort-icon" id="invSortIcon-doc_number"></i></th>
+                      <th class="sortable-th" onclick="sortInvoices('date')">Date<i class="fa-solid fa-sort sort-icon" id="invSortIcon-date"></i></th>
+                      <th class="sortable-th" onclick="sortInvoices('party')">Party Ledger / Customer<i class="fa-solid fa-sort sort-icon" id="invSortIcon-party"></i></th>
+                      <th class="sortable-th" onclick="sortInvoices('gstin')">GSTIN<i class="fa-solid fa-sort sort-icon" id="invSortIcon-gstin"></i></th>
+                      <th class="text-center sortable-th" onclick="sortInvoices('rate')">Rate<i class="fa-solid fa-sort sort-icon" id="invSortIcon-rate"></i></th>
+                      <th class="text-end sortable-th" onclick="sortInvoices('taxable_val')">Taxable Value (₹)<i class="fa-solid fa-sort sort-icon" id="invSortIcon-taxable_val"></i></th>
+                      <th class="text-end sortable-th" onclick="sortInvoices('cgst')">CGST (₹)<i class="fa-solid fa-sort sort-icon" id="invSortIcon-cgst"></i></th>
+                      <th class="text-end sortable-th" onclick="sortInvoices('sgst')">SGST (₹)<i class="fa-solid fa-sort sort-icon" id="invSortIcon-sgst"></i></th>
+                      <th class="text-end sortable-th" onclick="sortInvoices('igst')">IGST (₹)<i class="fa-solid fa-sort sort-icon" id="invSortIcon-igst"></i></th>
+                      <th class="text-end sortable-th" onclick="sortInvoices('total_val')">Invoice Total (₹)<i class="fa-solid fa-sort sort-icon" id="invSortIcon-total_val"></i></th>
                       <th class="text-center">Balance Status</th>
                     </tr>
                   </thead>
                   <tbody id="invoicesTableBody">
                     <tr>
-                      <td colspan="10" class="text-center py-4 text-muted">
+                      <td colspan="12" class="text-center py-4 text-muted">
                         <div class="spinner-border spinner-border-sm me-2 text-teal" role="status"></div>
                         Loading vouchers...
                       </td>
@@ -560,13 +540,28 @@
               </div>
 
               <!-- Pagination -->
-              <div class="d-flex align-items-center justify-content-between pt-2">
+              <div class="d-flex align-items-center justify-content-between pt-2 flex-wrap gap-2">
                 <div class="small text-muted" id="invPaginationInfo">Showing 0 to 0 of 0 vouchers</div>
-                <nav>
-                  <ul class="pagination pagination-sm mb-0" id="invPagination">
-                    <!-- Dynamic pagination items -->
-                  </ul>
-                </nav>
+                <div class="d-flex align-items-center gap-2">
+                  <div class="d-flex align-items-center gap-1">
+                    <label class="small text-muted mb-0" for="invPageSizeSelect">Rows:</label>
+                    <select id="invPageSizeSelect" class="form-select form-select-sm" style="width: 80px;" onchange="changeInvoicesPageSize(this.value)">
+                      <option value="25">25</option>
+                      <option value="50" selected>50</option>
+                      <option value="100">100</option>
+                      <option value="200">200</option>
+                    </select>
+                  </div>
+                  <div class="d-flex align-items-center gap-1">
+                    <label class="small text-muted mb-0" for="invJumpToPageInput">Go to:</label>
+                    <input type="number" id="invJumpToPageInput" class="form-control form-control-sm" style="width: 64px;" min="1" onkeydown="if(event.key==='Enter'){jumpToInvoicesPage(this.value); this.value='';}">
+                  </div>
+                  <nav>
+                    <ul class="pagination pagination-sm mb-0" id="invPagination">
+                      <!-- Dynamic pagination items -->
+                    </ul>
+                  </nav>
+                </div>
               </div>
             </div>
           </div>
@@ -591,6 +586,14 @@
 
             <!-- Content Container (Shown when client selected) -->
             <div id="tallyContent" class="d-none">
+              <div class="d-flex justify-content-between align-items-center mb-3">
+                <div class="btn-group btn-group-sm" role="group" aria-label="Return type">
+                  <input type="radio" class="btn-check" name="rtToggleTally" id="rtTallySales" checked onchange="setReturnType('GSTR1')">
+                  <label class="btn btn-outline-teal" for="rtTallySales"><i class="fa-solid fa-arrow-up-right-from-square me-1"></i>Sales (GSTR-1)</label>
+                  <input type="radio" class="btn-check" name="rtToggleTally" id="rtTallyPurchases" onchange="setReturnType('GSTR2B')">
+                  <label class="btn btn-outline-teal" for="rtTallyPurchases"><i class="fa-solid fa-arrow-down-left-from-circle me-1"></i>Purchases (GSTR-2B)</label>
+                </div>
+              </div>
               <div class="row g-4">
                 <!-- Column 1: XML Generation & Download -->
                 <div class="col-lg-6">
@@ -599,14 +602,14 @@
                       <h6 class="fw-bold mb-0 d-flex align-items-center justify-content-between">
                         <div class="d-flex align-items-center">
                           <i class="fa-solid fa-file-code me-2 text-teal fs-5"></i>
-                          Step A: Generate Consolidated Tally XML
+                          <span id="xmlGenStepLabel">Method 1: Generate Consolidated Sales XML</span>
                         </div>
                         <span class="badge bg-teal" id="namingConventionBadge">Using: Trade Name</span>
                       </h6>
                     </div>
                     <div class="card-body p-4">
-                      <p class="text-muted small mb-3">
-                        Generates a unified single <strong>Consolidated_Masters.xml</strong> (all 123 counterparty ledgers, GST duties, and Sales ledgers) and <strong>Consolidated_Entries.xml</strong> (all vouchers across all months) matching TallyPrime schemas.
+                      <p class="text-muted small mb-3" id="xmlGenDescription">
+                        Generates a unified single <strong>Consolidated_Masters_Sales.xml</strong> (all counterparty ledgers, GST duties, and Sales ledgers) and <strong>Consolidated_Entries_Sales.xml</strong> (all vouchers across all months) matching TallyPrime schemas.
                       </p>
 
                       <div class="mb-3">
@@ -648,20 +651,20 @@
                           <div class="d-flex align-items-center justify-content-between bg-white p-2 rounded border">
                             <div>
                               <i class="fa-solid fa-users me-2 text-primary"></i>
-                              <strong class="small" id="mastersFileName">Consolidated_Masters.xml</strong>
+                              <strong class="small" id="mastersFileName">Consolidated_Masters_Sales.xml</strong>
                               <div class="small text-muted" id="mastersFileSize">0 KB &bull; 123 Master Ledgers</div>
                             </div>
-                            <a href="/api/download/Consolidated_Masters.xml" class="btn btn-outline-primary btn-sm">
+                            <a href="/api/download/Consolidated_Masters_Sales.xml" id="mastersDownloadLink" class="btn btn-outline-primary btn-sm">
                               <i class="fa-solid fa-download"></i> Download
                             </a>
                           </div>
                           <div class="d-flex align-items-center justify-content-between bg-white p-2 rounded border">
                             <div>
                               <i class="fa-solid fa-receipt me-2 text-success"></i>
-                              <strong class="small" id="entriesFileName">Consolidated_Entries.xml</strong>
+                              <strong class="small" id="entriesFileName">Consolidated_Entries_Sales.xml</strong>
                               <div class="small text-muted" id="entriesFileSize">0 KB &bull; 3,551 Vouchers</div>
                             </div>
-                            <a href="/api/download/Consolidated_Entries.xml" class="btn btn-outline-success btn-sm">
+                            <a href="/api/download/Consolidated_Entries_Sales.xml" id="entriesDownloadLink" class="btn btn-outline-success btn-sm">
                               <i class="fa-solid fa-download"></i> Download
                             </a>
                           </div>
@@ -679,7 +682,7 @@
                       <h6 class="fw-bold mb-0 d-flex align-items-center justify-content-between">
                         <div class="d-flex align-items-center">
                           <i class="fa-solid fa-bolt me-2 text-warning fs-5"></i>
-                          Step B: Live TallyPrime HTTP Direct Import
+                          Method 2: Live TallyPrime HTTP Direct Import
                         </div>
                         <span class="badge bg-success" id="tallyLiveBadge">Port 9000 Ready</span>
                       </h6>
@@ -762,6 +765,20 @@
     </div>
 
   </main>
+
+  <!-- Credits Footer -->
+  <footer class="border-top bg-white py-3 mt-2">
+    <div class="container-fluid px-4 d-flex flex-wrap align-items-center justify-content-center gap-2 small text-muted">
+      <span>Created by</span>
+      <a href="https://www.linkedin.com/in/nandeesh-balekoppadaramane" target="_blank" rel="noopener noreferrer" class="text-teal-dark fw-semibold text-decoration-none">
+        <i class="fa-brands fa-linkedin me-1"></i>Nandeesh
+      </a>
+      <span>with the help of</span>
+      <a href="https://www.linkedin.com/in/rajasekaran-k-56b5681b/" target="_blank" rel="noopener noreferrer" class="text-teal-dark fw-semibold text-decoration-none">
+        <i class="fa-brands fa-linkedin me-1"></i>CA Rajasekaran
+      </a>
+    </div>
+  </footer>
 
   <!-- Add / Edit Client Modal -->
   <div class="modal fade" id="clientModal" tabindex="-1" aria-labelledby="clientModalLabel" aria-hidden="true">
@@ -867,14 +884,14 @@
                     <strong class="small text-dark">GST Portal Credentials (Optional for Auto-Fill)</strong>
                   </div>
                   <p class="text-muted small mb-2" style="font-size: 0.75rem;">
-                    Saved credentials are auto-filled into Chrome during GSTIN verification so you only have to enter the CAPTCHA.
+                    Saved credentials are auto-filled into Chrome during GSTIN verification and GSTR-2B portal downloads so you only have to enter the CAPTCHA.
                   </p>
                   <div class="row g-2">
-                    <div class="col-md-6">
+                    <div class="col-md-4">
                       <label for="clientFormGstUser" class="form-label small fw-semibold mb-1">GST Username / User ID</label>
                       <input type="text" class="form-control form-control-sm" id="clientFormGstUser" placeholder="e.g. portal_user" autocomplete="off">
                     </div>
-                    <div class="col-md-6">
+                    <div class="col-md-4">
                       <label for="clientFormGstPass" class="form-label small fw-semibold mb-1">GST Password</label>
                       <div class="input-group input-group-sm">
                         <input type="password" class="form-control" id="clientFormGstPass" placeholder="Portal password" autocomplete="off">
@@ -882,6 +899,13 @@
                           <i class="fa-solid fa-eye"></i>
                         </button>
                       </div>
+                    </div>
+                    <div class="col-md-4">
+                      <label for="clientFormFY" class="form-label small fw-semibold mb-1">Financial Year (for Portal Downloads)</label>
+                      <select class="form-select form-select-sm" id="clientFormFY">
+                        <option value="">Not set</option>
+                      </select>
+                      <div class="form-text small" style="font-size: 0.7rem;">GSTR-2B portal downloads for this client are restricted to this FY only.</div>
                     </div>
                   </div>
                 </div>
@@ -1218,6 +1242,181 @@
     </div>
   </div>
 
+  <!-- GSTR-2B Portal Download Modal -->
+  <div class="modal fade" id="gstr2bDownloadModal" tabindex="-1" aria-labelledby="gstr2bDownloadModalLabel" aria-hidden="true" data-bs-backdrop="static">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-content border-0 shadow">
+        <div class="modal-header bg-dark-navy text-white py-3">
+          <h5 class="modal-title fw-bold" id="gstr2bDownloadModalLabel">
+            <i class="fa-solid fa-cloud-arrow-down text-teal me-2"></i> Download GSTR-2B from GST Portal
+          </h5>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close" onclick="onCloseGstr2bDownloadModal()"></button>
+        </div>
+        <div class="modal-body p-4">
+          <div class="d-flex align-items-center justify-content-between mb-3 pb-2 border-bottom">
+            <ul class="nav nav-pills nav-fill gap-2">
+              <li class="nav-item">
+                <button class="nav-link active py-1 px-3 small fw-semibold" id="g2bTabSetupBtn" type="button" onclick="switchGstr2bDownloadView('setup')">
+                  <i class="fa-solid fa-sliders me-1"></i> 1. Select Months
+                </button>
+              </li>
+              <li class="nav-item">
+                <button class="nav-link py-1 px-3 small fw-semibold" id="g2bTabProgressBtn" type="button" onclick="switchGstr2bDownloadView('progress')">
+                  <i class="fa-solid fa-chart-line me-1"></i> 2. Live Activity & Results
+                </button>
+              </li>
+            </ul>
+            <div class="d-flex align-items-center gap-2">
+              <span id="g2bStatusPill" class="badge bg-secondary">Idle - Ready to start</span>
+              <button class="btn btn-outline-secondary btn-sm py-0 px-2" style="font-size: 0.72rem;" onclick="resetGstr2bDownloadModal()" title="Reset session and clear past results">
+                <i class="fa-solid fa-rotate-right me-1"></i> Reset
+              </button>
+            </div>
+          </div>
+
+          <!-- SECTION 1: Month selection (Setup) -->
+          <div id="g2bSetupSection">
+            <div class="p-2 px-3 mb-3 bg-light rounded border d-flex align-items-center justify-content-between">
+              <div>
+                <span class="text-muted small">Target Taxpayer:</span>
+                <strong class="text-dark ms-1" id="g2bActiveClientName">No Client Selected</strong>
+                <span class="badge bg-dark font-mono ms-2" id="g2bActiveClientGstin">-</span>
+              </div>
+              <span class="badge bg-teal text-white" id="g2bActiveClientFY">FY: Not set</span>
+            </div>
+
+            <div id="g2bNoFyWarning" class="alert alert-warning py-2 px-3 small d-none">
+              <i class="fa-solid fa-triangle-exclamation me-1"></i>
+              This client has no Financial Year set. Open <strong>Edit Profile</strong> and set one before downloading GSTR-2B from the portal.
+            </div>
+
+            <div class="d-flex align-items-center justify-content-between mb-2">
+              <label class="form-label small fw-bold text-dark mb-0">Select Months to Download (within the client's FY):</label>
+              <button type="button" class="btn btn-outline-secondary btn-sm py-0 px-2" style="font-size: 0.72rem;" onclick="toggleAllGstr2bMonths()">
+                <i class="fa-solid fa-list-check me-1"></i> Select All
+              </button>
+            </div>
+            <div class="row g-2 mb-3" id="g2bMonthCheckboxGrid">
+              <!-- Populated by app.js with one checkbox per fiscal month -->
+            </div>
+
+            <!-- GST Portal Login Credentials Auto-Fill Card -->
+            <div class="card p-3 mb-3 bg-light border">
+              <label class="form-label small fw-bold text-dark mb-2">
+                <i class="fa-solid fa-key text-teal me-1"></i> GST Portal Login Credentials (Auto-Fill)
+              </label>
+              <p class="text-muted small mb-2" style="font-size: 0.76rem;">
+                Chrome runs in the background and automatically enters your Username & Password.
+                When the CAPTCHA appears, it shows up right here on this page - type what you see and click Submit to continue.
+              </p>
+              <div class="row g-2">
+                <div class="col-md-6">
+                  <div class="input-group input-group-sm">
+                    <span class="input-group-text bg-white"><i class="fa-solid fa-user text-muted"></i></span>
+                    <input type="text" class="form-control" id="g2bGstUsername" placeholder="GST Portal Username / User ID" autocomplete="off">
+                  </div>
+                </div>
+                <div class="col-md-6">
+                  <div class="input-group input-group-sm">
+                    <span class="input-group-text bg-white"><i class="fa-solid fa-lock text-muted"></i></span>
+                    <input type="password" class="form-control" id="g2bGstPassword" placeholder="GST Portal Password" autocomplete="off">
+                    <button class="btn btn-outline-secondary" type="button" onclick="togglePasswordVisibility('g2bGstPassword', this)" title="Show/Hide Password">
+                      <i class="fa-solid fa-eye"></i>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- SECTION 2: Live Progress & Log Container -->
+          <div id="g2bProgressSection" class="d-none">
+            <div class="d-flex justify-content-between align-items-center mb-1 small">
+              <span class="fw-semibold text-dark" id="g2bProgressLabel">Processing...</span>
+              <span class="font-mono text-muted" id="g2bProgressCounter">0 / 0</span>
+            </div>
+            <div class="progress mb-3" style="height: 10px;">
+              <div id="g2bProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-teal" role="progressbar" style="width: 0%"></div>
+            </div>
+
+            <!-- CAPTCHA Relay -->
+            <div id="g2bCaptchaSection" class="alert alert-warning py-3 px-3 mb-3 d-none border-2 border-warning">
+              <div class="d-flex align-items-center mb-2">
+                <i class="fa-solid fa-shield-halved text-dark me-2 fs-5"></i>
+                <strong>Type the characters shown in the image below to continue logging in.</strong>
+              </div>
+              <div class="d-flex align-items-center gap-2 flex-wrap">
+                <img id="g2bCaptchaImage" alt="CAPTCHA" class="border rounded bg-white p-1" style="height: 44px;">
+                <input type="text" id="g2bCaptchaInput" class="form-control form-control-sm" style="max-width: 180px;"
+                       placeholder="Enter CAPTCHA" autocomplete="off" onkeydown="onGstr2bCaptchaInputKeydown(event)">
+                <button class="btn btn-warning btn-sm fw-bold px-3" id="g2bCaptchaSubmitBtn" onclick="submitGstr2bCaptcha()">
+                  <i class="fa-solid fa-arrow-right me-1"></i> Submit
+                </button>
+              </div>
+            </div>
+
+            <!-- Completion Banner -->
+            <div id="g2bCompleteBanner" class="alert alert-success py-2 px-3 small d-flex align-items-center justify-content-between mb-3 d-none border-2 border-success">
+              <div>
+                <i class="fa-solid fa-circle-check text-success me-2 fs-5"></i>
+                <strong>Download session completed!</strong> Any GSTR-2B data found has been imported into Purchases.
+              </div>
+              <button class="btn btn-outline-success btn-sm fw-bold px-3 py-1" onclick="resetGstr2bDownloadModal()">
+                <i class="fa-solid fa-sliders me-1"></i> New Download
+              </button>
+            </div>
+
+            <!-- Terminal Live Logs -->
+            <div class="d-flex align-items-center justify-content-between mb-1">
+              <label class="form-label small fw-bold text-muted mb-0">Live Activity Terminal:</label>
+            </div>
+            <div id="g2bLogTerminal" class="p-3 rounded font-mono small text-light bg-dark mb-3" style="height: 130px; overflow-y: auto; font-size: 0.75rem; line-height: 1.4;">
+              <div>Waiting to launch...</div>
+            </div>
+
+            <!-- Per-month Results Table -->
+            <div class="d-flex align-items-center justify-content-between mb-1">
+              <label class="form-label small fw-bold text-dark mb-0">Months in This Session:</label>
+            </div>
+            <div class="table-responsive border rounded" style="max-height: 150px; overflow-y: auto;">
+              <table class="table table-sm table-hover align-middle mb-0" style="font-size: 0.78rem;">
+                <thead class="table-light sticky-top">
+                  <tr>
+                    <th>Month</th>
+                    <th>Status</th>
+                    <th class="text-center">Documents Imported</th>
+                  </tr>
+                </thead>
+                <tbody id="g2bResultsBody">
+                  <tr>
+                    <td colspan="3" class="text-center text-muted py-2">No results yet.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer d-flex justify-content-between">
+          <div>
+            <button type="button" class="btn btn-outline-danger btn-sm d-none" id="g2bCancelBtn" onclick="cancelGstr2bDownload()">
+              <i class="fa-solid fa-stop me-1"></i> Stop Download
+            </button>
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="g2bBackToSetupFooterBtn" onclick="switchGstr2bDownloadView('setup')">
+              <i class="fa-solid fa-arrow-left me-1"></i> Back to Setup
+            </button>
+          </div>
+          <div class="d-flex gap-2">
+            <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal" id="g2bCloseBtn" onclick="onCloseGstr2bDownloadModal()">Close</button>
+            <button type="button" class="btn btn-teal btn-sm fw-bold" id="g2bStartBtn" onclick="startGstr2bDownload()">
+              <i class="fa-solid fa-play me-1"></i> Launch Chrome & Download
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Delete Party Mapping Confirmation Modal -->
   <div class="modal fade" id="deletePartyModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog">
@@ -1282,21 +1481,21 @@
     <div class="modal-dialog">
       <div class="modal-content border-0 shadow">
         <div class="modal-header bg-dark-navy text-white">
-          <h5 class="modal-title fw-bold" id="uploadModalLabel"><i class="fa-solid fa-cloud-arrow-up me-2 text-teal"></i>Upload GSTR-1 Files</h5>
+          <h5 class="modal-title fw-bold" id="uploadModalLabel"><i class="fa-solid fa-cloud-arrow-up me-2 text-teal"></i>Upload GSTR-1 / GSTR-2B Files</h5>
           <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body p-4">
           <div class="p-2 mb-3 bg-light rounded border small">
             Uploading returns for: <strong class="text-teal-dark" id="uploadClientBadge">No Taxpayer Client</strong>
           </div>
-          <p class="small text-muted mb-3">Upload your downloaded GSTR-1 JSON or ZIP files from the GST portal. The system will ingest and recalculate all financials automatically for this client.</p>
+          <p class="small text-muted mb-3">Upload your downloaded GSTR-1 (sales) or GSTR-2B (purchases) JSON or ZIP files from the GST portal — each file's type is detected automatically, and you can mix both in one upload. Everything is ingested and recalculated for this client.</p>
           <div class="mb-3">
             <input class="form-control" type="file" id="gstr1FileInput" multiple accept=".json,.zip">
           </div>
           <div class="form-check mb-3">
             <input class="form-check-input" type="checkbox" id="uploadClearExistingCheckbox">
             <label class="form-check-label small text-muted" for="uploadClearExistingCheckbox">
-              <i class="fa-solid fa-broom me-1 text-danger"></i> Replace / clear older return files for this client before saving
+              <i class="fa-solid fa-broom me-1 text-danger"></i> Replace / clear older return files (of the same type - Sales or Purchases) for this client before saving
             </label>
           </div>
           <div id="uploadProgress" class="progress d-none mb-3">
@@ -1333,9 +1532,9 @@
 
           <div class="alert alert-info d-flex align-items-start gap-2 py-2 px-3 mb-3" style="font-size: 0.85rem;">
             <i class="fa-solid fa-circle-info mt-1"></i>
-            <div><strong>Quick start:</strong> (1) Add or select a client in <em>Client Management</em> &rarr;
-            (2) <em>Upload Returns</em> on that client's card with your GSTR-1 JSON/ZIP &rarr;
-            (3) Go to <em>TallyPrime XML Export</em>, generate the XML, and import it into a running TallyPrime instance.</div>
+            <div><strong>Quick start:</strong> (1) Add or select a client in <em>Client Management</em>, setting their <em>Financial Year</em> if you plan to use the portal downloader &rarr;
+            (2) Get returns in — either <em>Upload Returns</em> with GSTR-1/GSTR-2B JSON or ZIP files, or use <em>Download GSTR-2B from Portal</em> to fetch Purchases directly &rarr;
+            (3) Go to <em>TallyPrime XML Export</em>, generate the XML, and either download it for manual import or push it straight to a running TallyPrime instance.</div>
           </div>
 
           <div class="accordion" id="helpAccordion">
@@ -1349,10 +1548,13 @@
               <div id="help1" class="accordion-collapse collapse show" data-bs-parent="#helpAccordion">
                 <div class="accordion-body small">
                   <ul class="mb-2">
-                    <li>Click <strong>Add New Client</strong> and enter the taxpayer's GSTIN, name, and (optionally) their GST portal login. PAN and State are auto-derived from the GSTIN.</li>
-                    <li>Click a client card's <strong>Select Taxpayer</strong> to make it the active client — every other tab (Monthly Breakdown, Counterparties, Transactions, XML Export) then works only on that client's data.</li>
-                    <li>Use <strong>Upload Returns</strong> on a client card to ingest a GSTR-1 JSON or ZIP file straight from the GST portal. The filename should contain the return type and financial year so the app can sanity-check it against the selected period.</li>
-                    <li>Only the <em>extracted</em> invoice data is stored — raw uploaded JSON/ZIP files are parsed once and discarded, never written to disk.</li>
+                    <li>Click <strong>Add New Client</strong> and enter the taxpayer's GSTIN, name, and (optionally) their GST portal login and <strong>Financial Year</strong>. PAN and State are auto-derived from the GSTIN.</li>
+                    <li>The <strong>Financial Year</strong> field only matters for the portal downloader (below) — it scopes which months you're allowed to fetch for that client. Manual JSON/ZIP uploads aren't restricted by it, since a return filed late can legitimately carry invoices from a prior year.</li>
+                    <li>The saved <strong>GST Username/Password</strong> auto-fills both the Counterparties portal-verification login and the GSTR-2B portal downloader login — you only ever have to type the CAPTCHA shown on this page.</li>
+                    <li>Click a client card's <strong>Select Taxpayer</strong> to make it the active client — every other tab then works only on that client's data.</li>
+                    <li>Each card shows the actual calendar months present in that client's <strong>Sales</strong> and <strong>Purchases</strong> data separately, derived from the invoice dates themselves — not from filenames — so it stays accurate regardless of what the uploaded files were named.</li>
+                    <li>Use <strong>Upload Returns</strong> to ingest a GSTR-1 or GSTR-2B JSON/ZIP file — the return type (Sales vs Purchases) is auto-detected per file, so one batch can mix both. Only the <em>extracted</em> invoice data is stored; raw uploaded files are parsed once in memory and never written to disk.</li>
+                    <li>If an uploaded file's GSTIN doesn't match the active client, or its period already has data loaded, the app stops and asks you to confirm before doing anything — it never silently switches clients, creates a duplicate client, or piles duplicate data into a period behind your back.</li>
                   </ul>
                 </div>
               </div>
@@ -1366,15 +1568,11 @@
               </h2>
               <div id="help2" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
                 <div class="accordion-body small">
-                  <p class="mb-2">One row per uploaded return period, with a document-type breakdown and tax totals:</p>
-                  <ul class="mb-2">
-                    <li><strong>B2B</strong> — standard registered-party sales invoices (incl. amendments)</li>
-                    <li><strong>B2C</strong> — unregistered-consumer sales, both small consolidated (B2CS) and single large interstate invoices &gt;₹2.5L (B2CL)</li>
-                    <li><strong>CDNR</strong> — credit &amp; debit notes, against registered or unregistered parties</li>
-                    <li><strong>EXP</strong> — export invoices (zero-rated, with or without IGST payment)</li>
-                    <li><strong>ADV</strong> — GST paid on advances received, and its later adjustment against a raised invoice</li>
-                  </ul>
-                  <p class="mb-0">Use <i class="fa-solid fa-trash-can text-danger"></i> on a row to delete just that period, or <strong>Clear Returns</strong> to wipe every period for the client.</p>
+                  <p class="mb-2">Use the <strong>Sales (GSTR-1) / Purchases (GSTR-2B)</strong> toggle at the top to switch which side of the ledger you're viewing — they're tracked as two completely separate datasets for the same client. One row per uploaded return period, with a document-type breakdown and tax totals:</p>
+                  <p class="mb-1"><strong>Sales (GSTR-1)</strong> — 5 categories: B2B, B2C (small consolidated + single large interstate invoices &gt;₹2.5L), CDNR (credit/debit notes), EXP (zero-rated exports), ADV (tax on advances received, and its later adjustment).</p>
+                  <p class="mb-1"><strong>Purchases (GSTR-2B)</strong> — 4 categories: B2B, RCM (reverse-charge, self-assessed), CDNR, and Ineligible (ITC that GSTN itself flags as not claimable). Purchases has one fewer category than Sales, so its table is one column narrower — that's expected, not a missing column.</p>
+                  <p class="mb-1">Click any column header to sort by it, and the table header stays pinned while you scroll a long list.</p>
+                  <p class="mb-0">Use <i class="fa-solid fa-trash-can text-danger"></i> on a row to delete just that period, or <strong>Clear Returns</strong> to wipe every period of the currently selected type for the client. Either one also tries to cancel any vouchers that period had already pushed into Tally (see section 6) — if Tally isn't reachable at that moment, it tells you plainly so you can cancel them there yourself.</p>
                 </div>
               </div>
             </div>
@@ -1388,8 +1586,9 @@
               <div id="help3" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
                 <div class="accordion-body small">
                   <ul class="mb-2">
-                    <li>Lists every distinct GSTIN found across the client's uploaded invoices, with the Trade/Legal name that will be used for its Tally ledger.</li>
-                    <li><strong>Verify via GST Portal</strong> launches an automated, headless lookup against the official GST portal to fetch the real registered Trade Name, Legal Name, and status for each GSTIN. You'll be asked to solve one CAPTCHA per login attempt on-screen; verified names are then saved permanently and reused on every future export.</li>
+                    <li>Lists every distinct GSTIN found across the client's invoices — from <strong>both</strong> Sales and Purchases at once — with the Trade/Legal name that will be used for its Tally ledger.</li>
+                    <li>The <strong>All / Sales / Purchases</strong> toggle filters the list by which side a GSTIN appears on. A GSTIN that's both a customer and a supplier (tagged "Customer &amp; Supplier") stays visible under either toggle, not just one.</li>
+                    <li><strong>Verify Portal</strong> launches an automated, headless lookup against the official GST portal to fetch the real registered Trade Name, Legal Name, and status for each GSTIN. You'll be asked to solve one CAPTCHA per login attempt, shown right on this page; verified names are saved permanently and reused on every future export.</li>
                     <li>You can also manually edit a party's Trade/Legal name at any time — manual edits are saved permanently and take priority.</li>
                     <li>The <strong>Trade Name / Legal Name</strong> toggle (in the top toolbar) switches which name is used to build every ledger across the whole app.</li>
                   </ul>
@@ -1405,7 +1604,14 @@
               </h2>
               <div id="help4" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
                 <div class="accordion-body small">
-                  <p class="mb-0">Every normalized document behind the summary numbers — searchable by invoice number, GSTIN, or party name, and filterable by type (B2B, B2C Large, B2C Retail, Exports, Advances, Credit/Debit Notes). This is the place to spot-check a number before it goes into Tally.</p>
+                  <ul class="mb-2">
+                    <li>Every normalized document behind the summary numbers — searchable by invoice number, GSTIN, or party name, filterable by type and balance status, and sortable by clicking any column header.</li>
+                    <li>Tax is broken out into separate <strong>CGST / SGST / IGST</strong> columns rather than one lumped "GST" figure, so you can see exactly which duty ledger each rupee belongs to.</li>
+                    <li>The <strong>Rate</strong> column shows the true total GST rate charged (e.g. 18%, not 9%) — it's computed by doubling the CGST-side rate for intrastate invoices, since CGST and SGST are each stored at half the real rate. If a single invoice mixes line items at different rates, it honestly shows <strong>"Multiple (5%, 18%)"</strong> instead of picking one and hiding the rest. <strong>"Nil-Rated"</strong> means this specific document carries no tax of its own — most commonly a reverse-charge purchase, where the tax lives on its separate RCM self-invoice journal row instead.</li>
+                    <li>A reverse-charge purchase always shows as two linked rows — the purchase itself (at taxable value only) and its RCM self-invoice journal (the self-assessed tax). Both together are what reaches Tally.</li>
+                    <li><strong>Export to Excel</strong> downloads every row matching your current search/filter/sort — not just the visible page — as a formatted <code>.xlsx</code> file with the same CGST/SGST/IGST/Rate breakdown shown on screen.</li>
+                    <li>Use the <strong>Rows</strong> selector and <strong>Go to</strong> box next to the pagination to change page size or jump straight to a page on a large list.</li>
+                  </ul>
                 </div>
               </div>
             </div>
@@ -1413,17 +1619,18 @@
             <div class="accordion-item">
               <h2 class="accordion-header">
                 <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#help5">
-                  <i class="fa-solid fa-paper-plane me-2 text-teal"></i> 5. TallyPrime XML Export &amp; Live Import
+                  <i class="fa-solid fa-cloud-arrow-down me-2 text-teal"></i> 5. Downloading GSTR-2B from the Portal
                 </button>
               </h2>
               <div id="help5" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
                 <div class="accordion-body small">
-                  <ol class="mb-2">
-                    <li><strong>Generate XML</strong> builds two files from the currently loaded data: <code>Consolidated_Masters.xml</code> (ledgers to create) and <code>Consolidated_Entries.xml</code> (vouchers to post).</li>
-                    <li>Download them for manual import via Tally's <em>Import Data</em> menu, or click <strong>Import to Tally</strong> to POST them directly over HTTP.</li>
-                    <li>Direct import requires TallyPrime to be running locally with its HTTP server enabled on port 9000 (Gateway of Tally &rarr; F1 Help &rarr; Settings &rarr; Connectivity). The status pill in the top-right shows whether it's currently reachable.</li>
-                    <li><strong>Always import Masters before Entries</strong> — vouchers reference ledgers that must already exist in the company.</li>
-                  </ol>
+                  <ul class="mb-2">
+                    <li>An alternative to manually downloading GSTR-2B from the GST portal yourself and uploading it — this launches a headless Chrome session that logs in with the client's saved GST credentials, navigates the Returns Dashboard, and pulls GSTR-2B JSON for whichever months you tick.</li>
+                    <li>Months are restricted to the client's configured <strong>Financial Year</strong> — set it on the client's profile first if you haven't (see section 1).</li>
+                    <li>Login needs one CAPTCHA, shown right on this page the same way portal verification does; type what you see and submit to continue.</li>
+                    <li>A month with genuinely no GSTR-2B data available is reported as such and skipped — that's not an error, just nothing to fetch yet for that period.</li>
+                    <li>Downloaded files are never saved to disk — each one is parsed in memory, its extracted documents are stored, and the file is deleted immediately, the same no-storage policy as manual uploads.</li>
+                  </ul>
                 </div>
               </div>
             </div>
@@ -1431,18 +1638,44 @@
             <div class="accordion-item">
               <h2 class="accordion-header">
                 <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#help6">
-                  <i class="fa-solid fa-triangle-exclamation me-2 text-teal"></i> Troubleshooting &amp; Limits
+                  <i class="fa-solid fa-paper-plane me-2 text-teal"></i> 6. TallyPrime XML Export &amp; Live Import
                 </button>
               </h2>
               <div id="help6" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
                 <div class="accordion-body small">
+                  <ol class="mb-2">
+                    <li>The <strong>Sales (GSTR-1) / Purchases (GSTR-2B)</strong> toggle picks which dataset to export — each generates its own pair of files (<code>Consolidated_Masters_Sales.xml</code>/<code>Consolidated_Entries_Sales.xml</code> or the <code>_Purchases</code> equivalents), so generating one never overwrites the other. They're always pushed to Tally separately, never combined into one payload.</li>
+                    <li><strong>Method 1 — Generate Consolidated XML</strong> builds the Masters file (ledgers to create) and Entries file (vouchers to post) for whichever side is currently selected. Any document whose total doesn't reconcile with its taxable value + tax by more than ₹2 is excluded from the Entries file and counted separately, rather than pushed in as bad data.</li>
+                    <li>Download the files for manual import via Tally's <em>Import Data</em> menu, or use <strong>Method 2 — Live TallyPrime HTTP Direct Import</strong> to POST them straight to a running TallyPrime instance over HTTP. It requires Tally's HTTP server enabled on port 9000 (Gateway of Tally &rarr; F1 Help &rarr; Settings &rarr; Connectivity) — the status pill in the top-right shows whether it's currently reachable.</li>
+                    <li><strong>Always import Masters before Entries</strong> — vouchers reference ledgers that must already exist in the company. "Full Live Import" does this in the correct order automatically.</li>
+                    <li>Every push is regenerated fresh from what's currently in the app first, so it always reflects exactly what you can see on screen — never stale or already-deleted data.</li>
+                    <li>Because the whole consolidated file is resent every time, vouchers already in Tally from a previous push will show as <strong>Altered</strong> again on a re-push, not just newly-added ones as <strong>Created</strong> — that's expected given the all-in-one-file design, not a sign of duplication.</li>
+                    <li>If Tally accepts the connection but reports errors or exceptions for individual vouchers, the result is shown as <strong>"Completed with Issues"</strong> rather than a blanket success, with the per-file created/altered/error counts underneath.</li>
+                    <li>Deleting a period or clearing returns (section 2) will also try to cancel, in Tally, any vouchers that period previously pushed there — keeping this tool and Tally in sync instead of leaving orphaned vouchers behind.</li>
+                  </ol>
+                </div>
+              </div>
+            </div>
+
+            <div class="accordion-item">
+              <h2 class="accordion-header">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#help7">
+                  <i class="fa-solid fa-triangle-exclamation me-2 text-teal"></i> Troubleshooting &amp; Limits
+                </button>
+              </h2>
+              <div id="help7" class="accordion-collapse collapse" data-bs-parent="#helpAccordion">
+                <div class="accordion-body small">
                   <ul class="mb-0">
                     <li><strong>"Cannot connect to TallyPrime"</strong> — Tally isn't running, the company isn't open, or the HTTP server / port 9000 isn't enabled. Click the status pill to re-check.</li>
-                    <li><strong>Upload rejected for filename/FY mismatch</strong> — the uploaded file's name must contain the GSTR return type and financial year so it isn't accidentally filed under the wrong period.</li>
-                    <li><strong>Batch capped at 10,000 invoices</strong> — split very large returns month-on-month (MOM) before uploading.</li>
+                    <li><strong>Upload asks to confirm a GSTIN mismatch</strong> — the file you're uploading belongs to a different GSTIN than the currently active client. Confirming either switches to (or creates) the client that GSTIN actually belongs to; cancelling leaves your active client and its data untouched.</li>
+                    <li><strong>Upload asks to confirm duplicate periods</strong> — the file's period already has data loaded for this client. Confirming adds to what's already there; tick <strong>Clear Existing</strong> beforehand instead if you want a clean replace.</li>
+                    <li><strong>Rate column shows "Multiple (...)"</strong> — that invoice genuinely has line items at more than one GST rate; the CGST/SGST/IGST amount columns are still summed correctly across all of them regardless.</li>
+                    <li><strong>Rate column shows "Nil-Rated"</strong> — this specific document has no tax lines of its own; check for a linked row (same document number, different type) carrying the actual tax, most commonly an RCM self-invoice.</li>
                     <li><strong>Zero-value invoices</strong> are intentionally excluded from the XML — they carry no accounting entry.</li>
-                    <li><strong>GST portal verification stuck on a CAPTCHA</strong> — you have 5 minutes to type the answer shown; it retries automatically up to 3 times on a wrong answer before failing that GSTIN.</li>
-                    <li>GSTR-2B (purchase-side ITC) ingestion is not yet supported — this release covers GSTR-1 (sales) only.</li>
+                    <li><strong>GST portal login (verification or GSTR-2B download) stuck on a CAPTCHA</strong> — you have 5 minutes to type the answer shown; it retries automatically up to 3 times on a wrong answer before failing.</li>
+                    <li><strong>Ineligible-ITC purchases</strong> post at their full invoice value with no separate tax ledger line, since the tax isn't recoverable and is treated as part of the cost.</li>
+                    <li><strong>All data lives in one local file</strong> — <code>client_memory.db</code>. There is currently no built-in backup/export for it, so back that file up yourself periodically if you want protection against accidental data loss.</li>
+                    <li>ISD credit distribution and import-of-goods (Bill of Entry) sections of GSTR-2B are not yet supported.</li>
                   </ul>
                 </div>
               </div>
@@ -1451,7 +1684,7 @@
           </div>
         </div>
         <div class="modal-footer">
-          <span class="text-muted small me-auto">All processing is local — no invoice data ever leaves this machine except to your own Tally instance.</span>
+          <span class="text-muted small me-auto">All processing is local — no invoice data ever leaves this machine except to your own Tally instance or the official GST portal.</span>
           <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
         </div>
       </div>
